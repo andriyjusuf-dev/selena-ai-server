@@ -3,6 +3,8 @@ const express = require('express');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
+const mammoth = require('mammoth');
+const xlsx = require('xlsx');
 const app = express();
 app.use(express.json());
 
@@ -89,15 +91,30 @@ async function processWebhook(data) {
             if (messageList && messageList.length > 0) {
                 const messageObj = messageList[0];
                 
-                if (messageObj.type === 'text' || messageObj.type === 'image') {
+                const validTypes = ['text', 'image', 'audio', 'document'];
+                if (validTypes.includes(messageObj.type)) {
                     let textBody = "";
-                    let isImage = false;
+                    let isMedia = false;
+                    let mediaType = null;
+                    let mediaId = null;
                     
                     if (messageObj.type === 'text') {
                         textBody = messageObj.text.body;
                     } else if (messageObj.type === 'image') {
-                        isImage = true;
+                        isMedia = true;
+                        mediaType = 'image';
+                        mediaId = messageObj.image.id;
                         textBody = messageObj.image.caption || "";
+                    } else if (messageObj.type === 'audio') {
+                        isMedia = true;
+                        mediaType = 'audio';
+                        mediaId = messageObj.audio.id;
+                        textBody = ""; // Voice notes have no caption
+                    } else if (messageObj.type === 'document') {
+                        isMedia = true;
+                        mediaType = 'document';
+                        mediaId = messageObj.document.id;
+                        textBody = messageObj.document.caption || messageObj.document.filename || "";
                     }
                     
                     const isEcho = (change.field === 'smb_message_echoes' || change.field === 'message_echoes' || messageObj.from_me === true);
@@ -109,14 +126,17 @@ async function processWebhook(data) {
                             targetId = value.contacts[0].wa_id;
                         }
                         
+                        let contextToSave = textBody;
+                        if (isMedia) contextToSave = `[Human agent sent a ${mediaType}: ${textBody}]`;
+                        
                         if (targetId) {
-                            await pauseAI(targetId, isImage ? `[Human agent sent an image: ${textBody}]` : textBody);
+                            await pauseAI(targetId, contextToSave);
                         } else {
                             const lastTarget = cacheGet(`last_paused_target`);
                             if (lastTarget) {
-                                await appendHistory(lastTarget, "model", isImage ? `[Human agent sent an image: ${textBody}]` : textBody);
+                                await appendHistory(lastTarget, "model", contextToSave);
                             } else {
-                                cacheSet(`orphan_echo`, isImage ? `[Human agent sent an image: ${textBody}]` : textBody, 15);
+                                cacheSet(`orphan_echo`, contextToSave, 15);
                             }
                         }
                     } else {
@@ -124,7 +144,7 @@ async function processWebhook(data) {
                         const senderId = messageObj.from;
                         
                         // 1. Check for Admin Training Command
-                        if (!isImage && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
+                        if (!isMedia && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
                             await handleAdminCommand(senderId, textBody);
                             return;
                         }
@@ -133,14 +153,14 @@ async function processWebhook(data) {
                         const isPaused = await checkIsPaused(senderId);
                         
                         let contextToSave = textBody;
-                        if (isImage) {
-                            console.log(`[Image Received] Analyzing image from ${senderId}...`);
-                            const mediaData = await downloadMetaMedia(messageObj.image.id);
+                        if (isMedia) {
+                            console.log(`[Media Received] Analyzing ${mediaType} from ${senderId}...`);
+                            const mediaData = await downloadMetaMedia(mediaId);
                             if (mediaData) {
-                                const description = await analyzeImage(mediaData.base64Data, mediaData.mimeType, textBody);
-                                contextToSave = `[Customer sent an image: ${description}]`;
+                                const description = await analyzeMedia(mediaData.buffer, mediaData.mimeType, textBody, mediaType);
+                                contextToSave = `[Customer sent a ${mediaType}: ${description}]`;
                             } else {
-                                contextToSave = `[Customer sent an image, but it could not be downloaded] ${textBody}`;
+                                contextToSave = `[Customer sent a ${mediaType}, but it could not be downloaded] ${textBody}`;
                             }
                         }
                         
@@ -299,23 +319,60 @@ async function downloadMetaMedia(mediaId) {
             responseType: 'arraybuffer'
         });
         
-        const base64Data = Buffer.from(downloadRes.data, 'binary').toString('base64');
-        return { base64Data, mimeType };
+        const buffer = Buffer.from(downloadRes.data, 'binary');
+        const base64Data = buffer.toString('base64');
+        return { buffer, base64Data, mimeType };
     } catch (error) {
         console.error("Meta Media Download Error:", error.response ? error.response.data : error.message);
         return null;
     }
 }
 
-async function analyzeImage(base64Data, mimeType, caption) {
+async function analyzeMedia(buffer, mimeType, caption, mediaType) {
+    // 1. Parse Excel files directly
+    if (mimeType.includes('spreadsheetml') || mimeType.includes('excel') || mimeType === 'text/csv') {
+        try {
+            const workbook = xlsx.read(buffer, { type: 'buffer' });
+            let allText = "";
+            workbook.SheetNames.forEach(sheetName => {
+                const sheet = workbook.Sheets[sheetName];
+                allText += `\n--- Sheet: ${sheetName} ---\n`;
+                allText += xlsx.utils.sheet_to_csv(sheet);
+            });
+            return `Parsed Spreadsheet Data:\n${allText.substring(0, 3000)}`;
+        } catch (e) {
+            return `Failed to parse spreadsheet: ${e.message}`;
+        }
+    }
+    
+    // 2. Parse Word Documents
+    if (mimeType.includes('wordprocessingml') || mimeType === 'application/msword') {
+        try {
+            const result = await mammoth.extractRawText({ buffer: buffer });
+            return `Parsed Word Document:\n${result.value.substring(0, 3000)}`;
+        } catch (e) {
+            return `Failed to parse Word Document (Note: old .doc formats may not be supported. Ask for PDF): ${e.message}`;
+        }
+    }
+    
+    // 3. For natively supported Gemini formats (Audio, PDF, Images)
+    let prompt = "";
+    if (mediaType === 'audio') {
+        prompt = "Please listen to this audio message from a customer and transcribe/summarize what they said in detail.";
+    } else if (mediaType === 'image') {
+        prompt = `Please describe this image in detail. The customer sent this to our dive shop. ${caption ? `They also included this caption: "${caption}"` : ''}`;
+    } else if (mediaType === 'document') {
+        prompt = `Please read this document sent by a customer and summarize its contents in detail. ${caption ? `Caption: "${caption}"` : ''}`;
+    }
+
     const payload = {
         contents: [{
             parts: [
-                { text: `Please describe this image in detail. The customer sent this to our dive shop. ${caption ? `They also included this caption: "${caption}"` : ''}` },
+                { text: prompt },
                 {
                     inlineData: {
                         mimeType: mimeType,
-                        data: base64Data
+                        data: buffer.toString('base64')
                     }
                 }
             ]
@@ -332,9 +389,10 @@ async function analyzeImage(base64Data, mimeType, caption) {
             return response.data.candidates[0].content.parts[0].text;
         }
     } catch (error) {
-        console.error("Gemini Image Analysis Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        console.error("Gemini Media Analysis Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        return `[Customer sent a file of type ${mimeType}, but the AI could not natively read it. Ask them for a PDF or plain text summary.]`;
     }
-    return "An image was sent, but it could not be analyzed.";
+    return "Media was sent, but it could not be analyzed.";
 }
 
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
@@ -365,7 +423,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 async function evaluateFollowup(history, followUpType) {
     const systemInstruction = `You are a sales assistant reviewing a customer conversation that has gone silent for ${followUpType} days. 
 Does this customer need a sales follow-up? 
-If the customer already rejected, booked, or the conversation naturally concluded, reply ONLY with the exact word: NO
+If the customer already rejected, booked, already completed their dive, or the conversation naturally concluded, reply ONLY with the exact word: NO
 If they were in the middle of inquiring and we should try to close the sale, reply ONLY with the exact word: YES`;
 
     const payload = {
