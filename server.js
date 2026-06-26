@@ -88,8 +88,17 @@ async function processWebhook(data) {
             if (messageList && messageList.length > 0) {
                 const messageObj = messageList[0];
                 
-                if (messageObj.type === 'text') {
-                    const textBody = messageObj.text.body;
+                if (messageObj.type === 'text' || messageObj.type === 'image') {
+                    let textBody = "";
+                    let isImage = false;
+                    
+                    if (messageObj.type === 'text') {
+                        textBody = messageObj.text.body;
+                    } else if (messageObj.type === 'image') {
+                        isImage = true;
+                        textBody = messageObj.image.caption || "";
+                    }
+                    
                     const isEcho = (change.field === 'smb_message_echoes' || change.field === 'message_echoes' || messageObj.from_me === true);
                     
                     if (isEcho) {
@@ -100,13 +109,13 @@ async function processWebhook(data) {
                         }
                         
                         if (targetId) {
-                            await pauseAI(targetId, textBody);
+                            await pauseAI(targetId, isImage ? `[Human agent sent an image: ${textBody}]` : textBody);
                         } else {
                             const lastTarget = cacheGet(`last_paused_target`);
                             if (lastTarget) {
-                                await appendHistory(lastTarget, "model", textBody);
+                                await appendHistory(lastTarget, "model", isImage ? `[Human agent sent an image: ${textBody}]` : textBody);
                             } else {
-                                cacheSet(`orphan_echo`, textBody, 15);
+                                cacheSet(`orphan_echo`, isImage ? `[Human agent sent an image: ${textBody}]` : textBody, 15);
                             }
                         }
                     } else {
@@ -114,17 +123,30 @@ async function processWebhook(data) {
                         const senderId = messageObj.from;
                         
                         // 1. Check for Admin Training Command
-                        if (ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
+                        if (!isImage && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
                             await handleAdminCommand(senderId, textBody);
                             return;
                         }
                         
                         // 2. Normal Customer Message
                         const isPaused = await checkIsPaused(senderId);
+                        
+                        let contextToSave = textBody;
+                        if (isImage) {
+                            console.log(`[Image Received] Analyzing image from ${senderId}...`);
+                            const mediaData = await downloadMetaMedia(messageObj.image.id);
+                            if (mediaData) {
+                                const description = await analyzeImage(mediaData.base64Data, mediaData.mimeType, textBody);
+                                contextToSave = `[Customer sent an image: ${description}]`;
+                            } else {
+                                contextToSave = `[Customer sent an image, but it could not be downloaded] ${textBody}`;
+                            }
+                        }
+                        
                         if (isPaused) {
-                            await appendHistory(senderId, "user", textBody);
+                            await appendHistory(senderId, "user", contextToSave);
                         } else {
-                            await appendHistory(senderId, "user", textBody);
+                            await appendHistory(senderId, "user", contextToSave);
                             const geminiReply = await callGemini(senderId);
                             if (geminiReply) {
                                 await sendWhatsAppMessage(senderId, geminiReply);
@@ -211,7 +233,7 @@ async function buildSystemPrompt() {
         .select('rule_text')
         .order('created_at', { ascending: true });
         
-    let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\n\n`;
+    let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\nIMPORTANT: Use minimal, relevant, and nice emoticons. Do not overuse them.\n\n`;
     
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
@@ -254,8 +276,61 @@ async function callGemini(senderId) {
 }
 
 // ==========================================
-// 5. META WHATSAPP API
+// 5. META WHATSAPP API & MEDIA
 // ==========================================
+async function downloadMetaMedia(mediaId) {
+    try {
+        // 1. Get media URL
+        const metaRes = await axios.get(`https://graph.facebook.com/v19.0/${mediaId}`, {
+            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+        });
+        const mediaUrl = metaRes.data.url;
+        const mimeType = metaRes.data.mime_type;
+        
+        // 2. Download binary data
+        const downloadRes = await axios.get(mediaUrl, {
+            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+            responseType: 'arraybuffer'
+        });
+        
+        const base64Data = Buffer.from(downloadRes.data, 'binary').toString('base64');
+        return { base64Data, mimeType };
+    } catch (error) {
+        console.error("Meta Media Download Error:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+async function analyzeImage(base64Data, mimeType, caption) {
+    const payload = {
+        contents: [{
+            parts: [
+                { text: `Please describe this image in detail. The customer sent this to our dive shop. ${caption ? `They also included this caption: "${caption}"` : ''}` },
+                {
+                    inlineData: {
+                        mimeType: mimeType,
+                        data: base64Data
+                    }
+                }
+            ]
+        }]
+    };
+
+    try {
+        const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            payload
+        );
+        
+        if (response.data.candidates && response.data.candidates.length > 0) {
+            return response.data.candidates[0].content.parts[0].text;
+        }
+    } catch (error) {
+        console.error("Gemini Image Analysis Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    }
+    return "An image was sent, but it could not be analyzed.";
+}
+
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
     
