@@ -26,6 +26,7 @@ function cacheSet(key, value, ttlSeconds = 15) {
 function cacheGet(key) { return memoryCache.get(key); }
 function cacheDelete(key) { memoryCache.delete(key); }
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // ==========================================
 // 1. WEBHOOK VERIFICATION (GET)
 // ==========================================
@@ -149,6 +150,11 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                             const geminiReply = await callGemini(senderId);
                             if (geminiReply) {
+                                // Realistic typing delay: 2s base + 30ms per char (Max 12 seconds)
+                                const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
+                                console.log(`[Typing Delay] Waiting ${delayMs/1000} seconds...`);
+                                await sleep(delayMs);
+                                
                                 await sendWhatsAppMessage(senderId, geminiReply);
                             }
                         }
@@ -233,7 +239,7 @@ async function buildSystemPrompt() {
         .select('rule_text')
         .order('created_at', { ascending: true });
         
-    let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\nIMPORTANT: Use minimal, relevant, and nice emoticons. Do not overuse them.\n\n`;
+    let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\nIMPORTANT: Use minimal, relevant, and nice emoticons. Do not overuse them. Keep your replies concise, friendly, and conversational. Do NOT send massive walls of text unless absolutely necessary to answer a complex question.\n\n`;
     
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
