@@ -281,13 +281,54 @@ async function buildSystemPrompt() {
 // ==========================================
 // 4. GEMINI API LOGIC
 // ==========================================
-async function callGemini(senderId) {
-    const history = await getHistory(senderId);
+async function handleBookingNotification(args, senderId) {
+    const now = new Date();
+    const baliHour = (now.getUTCHours() + 8) % 24;
+    
+    console.log(`[Booking] Detected booking. Bali Hour: ${baliHour}`);
+    
+    if (baliHour >= 18 || baliHour < 8) {
+        const msg = `🔔 *AFTER-HOURS BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}`;
+        
+        for (const adminPhone of ADMIN_NUMBERS) {
+            if (adminPhone.trim().length > 0) {
+                await sendWhatsAppMessage(adminPhone.trim(), msg);
+                await sleep(500); // prevent rate limits
+            }
+        }
+        console.log(`[Booking] Alert sent to Admins.`);
+    } else {
+        console.log(`[Booking] Ignored for alert. It is daytime in Bali.`);
+    }
+}
+
+async function callGemini(senderId, extraContext = []) {
+    let history = await getHistory(senderId);
+    if (extraContext.length > 0) {
+        history = history.concat(extraContext);
+    }
     const systemPrompt = await buildSystemPrompt();
     
     const payload = {
         system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: history
+        contents: history,
+        tools: [{
+            function_declarations: [{
+                name: "record_booking",
+                description: "Call this immediately when a customer confirms a booking. Determine if it is fully confirmed (deposit screenshot verified) or not confirmed (insists on coming without deposit).",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        status: { type: "STRING", description: "Either '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED (No Deposit)'" },
+                        customer_name: { type: "STRING", description: "Name of the customer" },
+                        dive_date: { type: "STRING", description: "Date of the dive" },
+                        pax: { type: "INTEGER", description: "Number of people" },
+                        dive_type: { type: "STRING", description: "What course or trip they are booking" }
+                    },
+                    required: ["status", "customer_name", "dive_date", "pax", "dive_type"]
+                }
+            }]
+        }]
     };
 
     try {
@@ -297,9 +338,29 @@ async function callGemini(senderId) {
         );
         
         if (response.data.candidates && response.data.candidates.length > 0) {
-            const botReply = response.data.candidates[0].content.parts[0].text;
-            await appendHistory(senderId, "model", botReply);
-            return botReply;
+            const part = response.data.candidates[0].content.parts[0];
+            
+            if (part.functionCall) {
+                const call = part.functionCall;
+                if (call.name === 'record_booking') {
+                    await handleBookingNotification(call.args, senderId);
+                    
+                    const funcCallCtx = response.data.candidates[0].content;
+                    const funcResCtx = {
+                        role: "function",
+                        parts: [{ functionResponse: { name: call.name, response: { status: "success" } } }]
+                    };
+                    
+                    // Recursive call to get the final text response for the customer
+                    return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx]);
+                }
+            }
+            
+            if (part.text) {
+                const botReply = part.text;
+                await appendHistory(senderId, "model", botReply);
+                return botReply;
+            }
         }
     } catch (error) {
         console.error("Gemini Error:", error.response ? JSON.stringify(error.response.data) : error.message);
