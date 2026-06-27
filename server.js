@@ -237,9 +237,9 @@ async function checkIsPaused(senderId) {
 }
 
 async function pauseAI(senderId, humanMessage) {
-    // Pause for 1 hour
+    // Pause for 30 minutes
     const pausedUntil = new Date();
-    pausedUntil.setHours(pausedUntil.getHours() + 1);
+    pausedUntil.setMinutes(pausedUntil.getMinutes() + 30);
     
     await supabase.from('pause_state').upsert({
         phone_number: senderId,
