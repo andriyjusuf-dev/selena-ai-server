@@ -126,17 +126,23 @@ async function processWebhook(data) {
                             targetId = value.contacts[0].wa_id;
                         }
                         
-                        let contextToSave = textBody;
-                        if (isMedia) contextToSave = `[Human agent sent a ${mediaType}: ${textBody}]`;
+                        // BUGFIX: Check if Selena actually sent this message just now.
+                        // If she did, do NOT pause the AI!
+                        const aiSent = targetId ? cacheGet(`ai_sent_${targetId}`) : false;
                         
-                        if (targetId) {
-                            await pauseAI(targetId, contextToSave);
-                        } else {
-                            const lastTarget = cacheGet(`last_paused_target`);
-                            if (lastTarget) {
-                                await appendHistory(lastTarget, "model", contextToSave);
+                        if (!aiSent) {
+                            let contextToSave = textBody;
+                            if (isMedia) contextToSave = `[Human agent sent a ${mediaType}: ${textBody}]`;
+                            
+                            if (targetId) {
+                                await pauseAI(targetId, contextToSave);
                             } else {
-                                cacheSet(`orphan_echo`, contextToSave, 15);
+                                const lastTarget = cacheGet(`last_paused_target`);
+                                if (lastTarget) {
+                                    await appendHistory(lastTarget, "model", contextToSave);
+                                } else {
+                                    cacheSet(`orphan_echo`, contextToSave, 15);
+                                }
                             }
                         }
                     } else {
