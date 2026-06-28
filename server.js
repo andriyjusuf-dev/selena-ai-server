@@ -487,6 +487,31 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
     }
 }
 
+async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode = "en") {
+    const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    
+    const payload = {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipientPhone,
+        type: "template",
+        template: {
+            name: templateName,
+            language: { code: languageCode }
+        }
+    };
+
+    try {
+        cacheSet(`ai_sent_${recipientPhone}`, "true", 15);
+        await axios.post(url, payload, {
+            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+        });
+        console.log(`[Sent] Template ${templateName} to ${recipientPhone}`);
+    } catch (error) {
+        console.error("WhatsApp Template Send Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    }
+}
+
 // ==========================================
 // 6. AUTOMATIC FOLLOW-UPS (Cron Job)
 // ==========================================
@@ -547,15 +572,14 @@ async function runDailyFollowUps() {
 
         // Check 2-day follow up (between 48 and 72 hours)
         if (hoursSilent >= 48 && hoursSilent < 72) {
-            if (lastMsg.message_text.includes("reconfirm your dive plan")) continue;
+            if (lastMsg.message_text.includes("reconfirm your dive plan") || lastMsg.message_text.includes("[Sent 2-Day Follow-Up Template]")) continue;
 
             const history = await getHistory(phone);
             const shouldFollowUp = await evaluateFollowup(history, 2);
             
             if (shouldFollowUp) {
-                const text = "Hello! I wanted to reconfirm your dive plan? Let me know if you have any questions or if you're ready to book!";
-                await sendWhatsAppMessage(phone, text);
-                await appendHistory(phone, "model", text);
+                await sendWhatsAppTemplate(phone, "sales_followup", "en");
+                await appendHistory(phone, "model", "[Sent 2-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 2-day follow up to ${phone}`);
                 
                 // Wait 5 seconds between messages so Meta doesn't flag us for spam
@@ -565,15 +589,14 @@ async function runDailyFollowUps() {
         
         // Check 7-day follow up (between 168 and 192 hours)
         else if (hoursSilent >= 168 && hoursSilent < 192) {
-            if (lastMsg.message_text.includes("checking in one last time")) continue;
+            if (lastMsg.message_text.includes("checking in one last time") || lastMsg.message_text.includes("[Sent 7-Day Follow-Up Template]")) continue;
 
             const history = await getHistory(phone);
             const shouldFollowUp = await evaluateFollowup(history, 7);
             
             if (shouldFollowUp) {
-                const text = "Hi there, just checking in one last time to see if you'd still like to dive with Sanctum! Let us know if we can help.";
-                await sendWhatsAppMessage(phone, text);
-                await appendHistory(phone, "model", text);
+                await sendWhatsAppTemplate(phone, "sales_followup", "en");
+                await appendHistory(phone, "model", "[Sent 7-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 7-day follow up to ${phone}`);
                 
                 await sleep(5000);
