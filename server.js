@@ -78,13 +78,13 @@ async function callGeminiTelegram(text) {
                 }
             }, {
                 name: "delete_rule",
-                description: "Delete an existing rule from the master database by its exact ID.",
+                description: "Delete an existing rule from the master database.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
-                        rule_id: { type: "INTEGER", description: "The ID of the rule to delete (you must use list_rules first to find the ID if you don't know it)." }
+                        rule_text: { type: "STRING", description: "The exact rule text of the rule you want to delete (you must use list_rules first to copy the exact text)." }
                     },
-                    required: ["rule_id"]
+                    required: ["rule_text"]
                 }
             }]
         }]
@@ -109,7 +109,7 @@ async function callGeminiTelegram(text) {
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }] };
                 } else if (call.name === 'list_rules') {
                     console.log(`[Telegram Tool] AI is running list_rules`);
-                    const { data, error } = await supabase.from('rules').select('id, rule_text').order('created_at', { ascending: true });
+                    const { data, error } = await supabase.from('rules').select('rule_text').order('created_at', { ascending: true });
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { rules: data || [], error: error ? error.message : null } } }] };
                 } else if (call.name === 'add_rule') {
                     console.log(`[Telegram Tool] AI is running add_rule with text: ${call.args.rule_text}`);
@@ -117,8 +117,8 @@ async function callGeminiTelegram(text) {
                     if (error) console.error("[Supabase Error] add_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule added." } } }] };
                 } else if (call.name === 'delete_rule') {
-                    console.log(`[Telegram Tool] AI is running delete_rule for ID: ${call.args.rule_id}`);
-                    const { error } = await supabase.from('rules').delete().eq('id', call.args.rule_id);
+                    console.log(`[Telegram Tool] AI is running delete_rule for text: ${call.args.rule_text}`);
+                    const { error } = await supabase.from('rules').delete().eq('rule_text', call.args.rule_text);
                     if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
                 }
