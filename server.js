@@ -611,3 +611,85 @@ If they were in the middle of inquiring and we should try to close the sale, rep
     try {
         const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            payload
+        );
+        if (response.data.candidates && response.data.candidates.length > 0) {
+            const answer = response.data.candidates[0].content.parts[0].text.trim().toUpperCase();
+            return answer.includes('YES');
+        }
+    } catch (error) {
+        console.error("Gemini Followup Eval Error:", error.message);
+    }
+    return false; // Default to safe (don't spam)
+}
+
+async function runDailyFollowUps() {
+    console.log("[Cron] Running daily follow-up checks...");
+    
+    // Only fetch messages from the last 10 days to stay well under the 1000 row limit
+    const tenDaysAgo = new Date();
+    tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
+
+    const { data: convos, error } = await supabase
+        .from('conversations')
+        .select('phone_number, message_text, created_at')
+        .gte('created_at', tenDaysAgo.toISOString())
+        .order('created_at', { ascending: false });
+        
+    if (error || !convos) return;
+
+    // Group by phone number to find the LATEST message for each
+    const latestMessages = new Map();
+    for (const msg of convos) {
+        if (!latestMessages.has(msg.phone_number)) {
+            latestMessages.set(msg.phone_number, msg);
+        }
+    }
+
+    const now = new Date();
+
+    for (const [phone, lastMsg] of latestMessages.entries()) {
+        const lastTime = new Date(lastMsg.created_at);
+        const hoursSilent = (now - lastTime) / (1000 * 60 * 60);
+
+        // Check 2-day follow up (between 48 and 72 hours)
+        if (hoursSilent >= 48 && hoursSilent < 72) {
+            if (lastMsg.message_text.includes("reconfirm your dive plan") || lastMsg.message_text.includes("[Sent 2-Day Follow-Up Template]")) continue;
+
+            const history = await getHistory(phone);
+            const shouldFollowUp = await evaluateFollowup(history, 2);
+            
+            if (shouldFollowUp) {
+                await sendWhatsAppTemplate(phone, "sales_followup", "en");
+                await appendHistory(phone, "model", "[Sent 2-Day Follow-Up Template]");
+                console.log(`[Follow-up] Sent 2-day follow up to ${phone}`);
+                
+                // Wait 5 seconds between messages so Meta doesn't flag us for spam
+                await sleep(5000); 
+            }
+        }
+        
+        // Check 7-day follow up (between 168 and 192 hours)
+        else if (hoursSilent >= 168 && hoursSilent < 192) {
+            if (lastMsg.message_text.includes("checking in one last time") || lastMsg.message_text.includes("[Sent 7-Day Follow-Up Template]")) continue;
+
+            const history = await getHistory(phone);
+            const shouldFollowUp = await evaluateFollowup(history, 7);
+            
+            if (shouldFollowUp) {
+                await sendWhatsAppTemplate(phone, "sales_followup", "en");
+                await appendHistory(phone, "model", "[Sent 7-Day Follow-Up Template]");
+                console.log(`[Follow-up] Sent 7-day follow up to ${phone}`);
+                
+                await sleep(5000);
+            }
+        }
+    }
+}
+
+// Run every day at 10:00 AM server time
+cron.schedule('0 10 * * *', runDailyFollowUps);
+
+app.listen(PORT, () => {
+    console.log(`Sanctum AI Server is running on port ${PORT}`);
+});
