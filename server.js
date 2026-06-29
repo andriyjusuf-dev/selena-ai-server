@@ -48,7 +48,7 @@ async function sendTelegramAlert(textMessage) {
 
 async function callGeminiTelegram(text) {
     const systemPrompt = await buildSystemPrompt();
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop or your instructions. Answer them helpfully, clearly, and concisely as a knowledgeable assistant. Do NOT try to sell them anything.`;
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings). If a staff member asks you to check bookings, add a rule, or check your current rules, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
     
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
@@ -103,17 +103,23 @@ async function callGeminiTelegram(text) {
                 let funcResCtx = null;
 
                 if (call.name === 'check_recent_bookings') {
+                    console.log(`[Telegram Tool] AI is running check_recent_bookings`);
                     const limit = call.args.limit || 10;
                     const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false }).limit(limit);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }] };
                 } else if (call.name === 'list_rules') {
+                    console.log(`[Telegram Tool] AI is running list_rules`);
                     const { data, error } = await supabase.from('rules').select('id, rule_text').order('created_at', { ascending: true });
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { rules: data || [], error: error ? error.message : null } } }] };
                 } else if (call.name === 'add_rule') {
+                    console.log(`[Telegram Tool] AI is running add_rule with text: ${call.args.rule_text}`);
                     const { error } = await supabase.from('rules').insert([{ rule_text: call.args.rule_text }]);
+                    if (error) console.error("[Supabase Error] add_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule added." } } }] };
                 } else if (call.name === 'delete_rule') {
+                    console.log(`[Telegram Tool] AI is running delete_rule for ID: ${call.args.rule_id}`);
                     const { error } = await supabase.from('rules').delete().eq('id', call.args.rule_id);
+                    if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
                 }
 
