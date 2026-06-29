@@ -78,13 +78,13 @@ async function callGeminiTelegram(text) {
                 }
             }, {
                 name: "delete_rule",
-                description: "Delete an existing rule from the master database.",
+                description: "Delete an existing rule from the master database by matching a few words.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
-                        rule_text: { type: "STRING", description: "The exact rule text of the rule you want to delete (you must use list_rules first to copy the exact text)." }
+                        rule_text_match: { type: "STRING", description: "A few words from the rule you want to delete. We will delete any rule containing these words." }
                     },
-                    required: ["rule_text"]
+                    required: ["rule_text_match"]
                 }
             }]
         }]
@@ -117,8 +117,8 @@ async function callGeminiTelegram(text) {
                     if (error) console.error("[Supabase Error] add_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule added." } } }] };
                 } else if (call.name === 'delete_rule') {
-                    console.log(`[Telegram Tool] AI is running delete_rule for text: ${call.args.rule_text}`);
-                    const { error } = await supabase.from('rules').delete().eq('rule_text', call.args.rule_text);
+                    console.log(`[Telegram Tool] AI is running delete_rule for match: ${call.args.rule_text_match}`);
+                    const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${call.args.rule_text_match}%`);
                     if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
                 }
