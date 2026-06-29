@@ -15,6 +15,8 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -29,6 +31,82 @@ function cacheGet(key) { return memoryCache.get(key); }
 function cacheDelete(key) { memoryCache.delete(key); }
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ==========================================
+// 1.1 TELEGRAM INTEGRATION
+// ==========================================
+async function sendTelegramAlert(textMessage) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    try {
+        await axios.post(url, { chat_id: TELEGRAM_CHAT_ID, text: textMessage });
+        console.log(`[Sent] Telegram Alert to Admin Group`);
+    } catch (error) {
+        console.error("Telegram Error:", error.response ? error.response.data : error.message);
+    }
+}
+
+async function callGeminiTelegram(text) {
+    const systemPrompt = await buildSystemPrompt();
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop or your instructions. Answer them helpfully, clearly, and concisely as a knowledgeable assistant. Do NOT try to sell them anything.`;
+    
+    const payload = {
+        system_instruction: { parts: [{ text: telegramPrompt }] },
+        contents: [{ role: "user", parts: [{ text: text }] }]
+    };
+
+    try {
+        const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            payload
+        );
+        if (response.data.candidates && response.data.candidates.length > 0) {
+            return response.data.candidates[0].content.parts[0].text;
+        }
+    } catch (error) {
+        console.error("Gemini Telegram Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    }
+    return null;
+}
+
+app.post('/telegram-webhook', async (req, res) => {
+    res.sendStatus(200);
+    const update = req.body;
+    if (update.message && update.message.text && update.message.chat) {
+        const chatId = update.message.chat.id.toString();
+        const text = update.message.text;
+
+        if (chatId === TELEGRAM_CHAT_ID || update.message.chat.type === 'private') {
+            const isMentioned = text.includes('@SelenaSanctumBot');
+            const isPrivate = update.message.chat.type === 'private';
+            
+            if (isMentioned || isPrivate) {
+                const cleanText = text.replace('@SelenaSanctumBot', '').trim();
+                if (cleanText.length === 0) return;
+                
+                console.log(`[Telegram] Question from staff: ${cleanText}`);
+                
+                try {
+                    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+                        chat_id: chatId,
+                        action: "typing"
+                    });
+                    
+                    const reply = await callGeminiTelegram(cleanText);
+                    if (reply) {
+                        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                            chat_id: chatId,
+                            text: reply
+                        });
+                    }
+                } catch (e) {
+                    console.error("Telegram webhook processing error", e);
+                }
+            }
+        }
+    }
+});
+
 // ==========================================
 // 1. WEBHOOK VERIFICATION (GET)
 // ==========================================
@@ -293,10 +371,14 @@ async function handleBookingNotification(args, senderId) {
     if (baliHour >= 18 || baliHour < 8) {
         const msg = `🔔 *AFTER-HOURS BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}`;
         
-        for (const adminPhone of ADMIN_NUMBERS) {
-            if (adminPhone.trim().length > 0) {
-                await sendWhatsAppMessage(adminPhone.trim(), msg);
-                await sleep(500); // prevent rate limits
+        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+            await sendTelegramAlert(msg);
+        } else {
+            for (const adminPhone of ADMIN_NUMBERS) {
+                if (adminPhone.trim().length > 0) {
+                    await sendWhatsAppMessage(adminPhone.trim(), msg);
+                    await sleep(500); // prevent rate limits
+                }
             }
         }
         console.log(`[Booking] Alert sent to Admins.`);
@@ -529,85 +611,3 @@ If they were in the middle of inquiring and we should try to close the sale, rep
     try {
         const response = await axios.post(
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
-            payload
-        );
-        if (response.data.candidates && response.data.candidates.length > 0) {
-            const answer = response.data.candidates[0].content.parts[0].text.trim().toUpperCase();
-            return answer.includes('YES');
-        }
-    } catch (error) {
-        console.error("Gemini Followup Eval Error:", error.message);
-    }
-    return false; // Default to safe (don't spam)
-}
-
-async function runDailyFollowUps() {
-    console.log("[Cron] Running daily follow-up checks...");
-    
-    // Only fetch messages from the last 10 days to stay well under the 1000 row limit
-    const tenDaysAgo = new Date();
-    tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
-
-    const { data: convos, error } = await supabase
-        .from('conversations')
-        .select('phone_number, message_text, created_at')
-        .gte('created_at', tenDaysAgo.toISOString())
-        .order('created_at', { ascending: false });
-        
-    if (error || !convos) return;
-
-    // Group by phone number to find the LATEST message for each
-    const latestMessages = new Map();
-    for (const msg of convos) {
-        if (!latestMessages.has(msg.phone_number)) {
-            latestMessages.set(msg.phone_number, msg);
-        }
-    }
-
-    const now = new Date();
-
-    for (const [phone, lastMsg] of latestMessages.entries()) {
-        const lastTime = new Date(lastMsg.created_at);
-        const hoursSilent = (now - lastTime) / (1000 * 60 * 60);
-
-        // Check 2-day follow up (between 48 and 72 hours)
-        if (hoursSilent >= 48 && hoursSilent < 72) {
-            if (lastMsg.message_text.includes("reconfirm your dive plan") || lastMsg.message_text.includes("[Sent 2-Day Follow-Up Template]")) continue;
-
-            const history = await getHistory(phone);
-            const shouldFollowUp = await evaluateFollowup(history, 2);
-            
-            if (shouldFollowUp) {
-                await sendWhatsAppTemplate(phone, "sales_followup", "en");
-                await appendHistory(phone, "model", "[Sent 2-Day Follow-Up Template]");
-                console.log(`[Follow-up] Sent 2-day follow up to ${phone}`);
-                
-                // Wait 5 seconds between messages so Meta doesn't flag us for spam
-                await sleep(5000); 
-            }
-        }
-        
-        // Check 7-day follow up (between 168 and 192 hours)
-        else if (hoursSilent >= 168 && hoursSilent < 192) {
-            if (lastMsg.message_text.includes("checking in one last time") || lastMsg.message_text.includes("[Sent 7-Day Follow-Up Template]")) continue;
-
-            const history = await getHistory(phone);
-            const shouldFollowUp = await evaluateFollowup(history, 7);
-            
-            if (shouldFollowUp) {
-                await sendWhatsAppTemplate(phone, "sales_followup", "en");
-                await appendHistory(phone, "model", "[Sent 7-Day Follow-Up Template]");
-                console.log(`[Follow-up] Sent 7-day follow up to ${phone}`);
-                
-                await sleep(5000);
-            }
-        }
-    }
-}
-
-// Run every day at 10:00 AM server time
-cron.schedule('0 10 * * *', runDailyFollowUps);
-
-app.listen(PORT, () => {
-    console.log(`Sanctum AI Server is running on port ${PORT}`);
-});
