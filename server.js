@@ -52,7 +52,19 @@ async function callGeminiTelegram(text) {
     
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
-        contents: [{ role: "user", parts: [{ text: text }] }]
+        contents: [{ role: "user", parts: [{ text: text }] }],
+        tools: [{
+            function_declarations: [{
+                name: "check_recent_bookings",
+                description: "Look up recent bookings in the database to answer staff questions about sales, customers, or special requests.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        limit: { type: "INTEGER", description: "Number of recent bookings to fetch (e.g., 5, 10)" }
+                    }
+                }
+            }]
+        }]
     };
 
     try {
@@ -61,7 +73,41 @@ async function callGeminiTelegram(text) {
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
-            return response.data.candidates[0].content.parts[0].text;
+            const part = response.data.candidates[0].content.parts[0];
+            
+            if (part.functionCall) {
+                const call = part.functionCall;
+                if (call.name === 'check_recent_bookings') {
+                    const limit = call.args.limit || 10;
+                    const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false }).limit(limit);
+                    
+                    const funcResCtx = {
+                        role: "function",
+                        parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }]
+                    };
+                    
+                    const secondPayload = {
+                        system_instruction: { parts: [{ text: telegramPrompt }] },
+                        contents: [
+                            { role: "user", parts: [{ text: text }] },
+                            response.data.candidates[0].content, // the function call
+                            funcResCtx // the function response
+                        ]
+                    };
+                    
+                    const res2 = await axios.post(
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                        secondPayload
+                    );
+                    if (res2.data.candidates && res2.data.candidates.length > 0) {
+                        return res2.data.candidates[0].content.parts[0].text;
+                    }
+                }
+            }
+            
+            if (part.text) {
+                return part.text;
+            }
         }
     } catch (error) {
         console.error("Gemini Telegram Error:", error.response ? JSON.stringify(error.response.data) : error.message);
@@ -368,8 +414,23 @@ async function handleBookingNotification(args, senderId) {
     
     console.log(`[Booking] Detected booking. Bali Hour: ${baliHour}`);
     
+    // Save to Database
+    try {
+        await supabase.from('bookings').insert([{
+            customer_phone: senderId,
+            customer_name: args.customer_name,
+            status: args.status,
+            dive_date: args.dive_date,
+            pax: args.pax,
+            dive_type: args.dive_type,
+            special_requests: args.special_requests || "None"
+        }]);
+    } catch (e) {
+        console.error("Failed to save booking:", e.message);
+    }
+    
     if (baliHour >= 18 || baliHour < 8) {
-        const msg = `🔔 *AFTER-HOURS BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}`;
+        const msg = `🔔 *AFTER-HOURS BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}\nSpecial Requests: ${args.special_requests || "None"}`;
         
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
             await sendTelegramAlert(msg);
@@ -408,9 +469,10 @@ async function callGemini(senderId, extraContext = []) {
                         customer_name: { type: "STRING", description: "Name of the customer" },
                         dive_date: { type: "STRING", description: "Date of the dive" },
                         pax: { type: "INTEGER", description: "Number of people" },
-                        dive_type: { type: "STRING", description: "What course or trip they are booking" }
+                        dive_type: { type: "STRING", description: "What course or trip they are booking" },
+                        special_requests: { type: "STRING", description: "Any special requests, dietary restrictions (e.g., vegan), or notes (e.g., diving with partner, wants to dive deep). Put 'None' if not applicable." }
                     },
-                    required: ["status", "customer_name", "dive_date", "pax", "dive_type"]
+                    required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
                 }
             }]
         }]
