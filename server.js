@@ -63,6 +63,29 @@ async function callGeminiTelegram(text) {
                         limit: { type: "INTEGER", description: "Number of recent bookings to fetch (e.g., 5, 10)" }
                     }
                 }
+            }, {
+                name: "list_rules",
+                description: "Fetch all current rules from the master database to see what instructions you are currently following. Use this to find the rule ID if you need to delete it."
+            }, {
+                name: "add_rule",
+                description: "Add a new rule to the master database. This rule will immediately apply to all future customer interactions on WhatsApp.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        rule_text: { type: "STRING", description: "The exact rule text to add. E.g., 'URGENT: Do not accept any new Open Water bookings for August 15th, the boat is full.'" }
+                    },
+                    required: ["rule_text"]
+                }
+            }, {
+                name: "delete_rule",
+                description: "Delete an existing rule from the master database by its exact ID.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        rule_id: { type: "INTEGER", description: "The ID of the rule to delete (you must use list_rules first to find the ID if you don't know it)." }
+                    },
+                    required: ["rule_id"]
+                }
             }]
         }]
     };
@@ -77,15 +100,24 @@ async function callGeminiTelegram(text) {
             
             if (part.functionCall) {
                 const call = part.functionCall;
+                let funcResCtx = null;
+
                 if (call.name === 'check_recent_bookings') {
                     const limit = call.args.limit || 10;
                     const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false }).limit(limit);
-                    
-                    const funcResCtx = {
-                        role: "function",
-                        parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }]
-                    };
-                    
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }] };
+                } else if (call.name === 'list_rules') {
+                    const { data, error } = await supabase.from('rules').select('id, rule_text').order('created_at', { ascending: true });
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { rules: data || [], error: error ? error.message : null } } }] };
+                } else if (call.name === 'add_rule') {
+                    const { error } = await supabase.from('rules').insert([{ rule_text: call.args.rule_text }]);
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule added." } } }] };
+                } else if (call.name === 'delete_rule') {
+                    const { error } = await supabase.from('rules').delete().eq('id', call.args.rule_id);
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
+                }
+
+                if (funcResCtx) {
                     const secondPayload = {
                         system_instruction: { parts: [{ text: telegramPrompt }] },
                         contents: [
