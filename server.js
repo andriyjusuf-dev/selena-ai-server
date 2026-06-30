@@ -1,11 +1,13 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 const mammoth = require('mammoth');
 const xlsx = require('xlsx');
 const app = express();
+app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
@@ -243,6 +245,53 @@ app.get('/whatsapp-webhook', (req, res) => {
         return res.status(200).send(req.query['hub.challenge']);
     }
     return res.status(403).send("Forbidden");
+});
+
+// ==========================================
+// 1.5 KIOSK API (Web Interface)
+// ==========================================
+app.post('/kiosk-chat', async (req, res) => {
+    const { text, language } = req.body;
+    if (!text) return res.status(400).send("No text provided");
+    
+    try {
+        console.log(`[Kiosk] Received text: ${text}`);
+        const extraContext = [{ 
+            role: 'user', 
+            parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. They are speaking to you in this language: ${language || 'English'}. Reply in that language.]` }] 
+        }];
+        
+        // Use a dedicated session ID for the Kiosk
+        const botReply = await callGemini('KIOSK_DESK_1', extraContext.concat([{ role: 'user', parts: [{ text: text }] }]));
+        return res.json({ reply: botReply || "Sorry, I am having trouble connecting to my brain right now." });
+    } catch (e) {
+        console.error("Kiosk Chat Error", e);
+        return res.status(500).json({ reply: "Connection Error." });
+    }
+});
+
+app.post('/kiosk-translate', async (req, res) => {
+    const { text, targetLanguage } = req.body;
+    if (!text || !targetLanguage) return res.status(400).send("Missing text or language");
+    
+    const payload = {
+        system_instruction: { parts: [{ text: `You are a professional scuba diving translator. Translate the following text into ${targetLanguage}. ONLY reply with the translated text, absolutely no other commentary.` }] },
+        contents: [{ role: "user", parts: [{ text: text }] }]
+    };
+
+    try {
+        const response = await axios.post(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            payload
+        );
+        if (response.data.candidates && response.data.candidates.length > 0) {
+            const translation = response.data.candidates[0].content.parts[0].text;
+            return res.json({ translation });
+        }
+    } catch (error) {
+        console.error("Translation Error", error);
+    }
+    return res.status(500).json({ translation: "Translation failed." });
 });
 
 // ==========================================
