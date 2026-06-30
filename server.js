@@ -261,8 +261,8 @@ app.post('/kiosk-chat', async (req, res) => {
             parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. They are speaking to you in this language: ${language || 'English'}. Reply in that language.]` }] 
         }];
         
-        // Use a dedicated session ID for the Kiosk
-        const botReply = await callGemini('KIOSK_DESK_1', extraContext.concat([{ role: 'user', parts: [{ text: text }] }]));
+        // Use a dedicated session ID for the Kiosk and force the Flash model for speed
+        const botReply = await callGemini('KIOSK_DESK_1', extraContext.concat([{ role: 'user', parts: [{ text: text }] }]), "gemini-2.5-flash");
         return res.json({ reply: botReply || "Sorry, I am having trouble connecting to my brain right now." });
     } catch (e) {
         console.error("Kiosk Chat Error", e);
@@ -281,7 +281,7 @@ app.post('/kiosk-translate', async (req, res) => {
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
@@ -576,7 +576,7 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callGemini(senderId, extraContext = []) {
+async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro") {
     let history = await getHistory(senderId);
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
@@ -608,7 +608,7 @@ async function callGemini(senderId, extraContext = []) {
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         
@@ -627,7 +627,7 @@ async function callGemini(senderId, extraContext = []) {
                     };
                     
                     // Recursive call to get the final text response for the customer
-                    return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx]);
+                    return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
                 }
             }
             
