@@ -48,7 +48,7 @@ async function sendTelegramAlert(textMessage) {
 
 async function callGeminiTelegram(text) {
     const systemPrompt = await buildSystemPrompt();
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings). If a staff member asks you to check bookings, add a rule, or check your current rules, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
     
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
@@ -86,6 +86,27 @@ async function callGeminiTelegram(text) {
                     },
                     required: ["rule_text_match"]
                 }
+            }, {
+                name: "unpause_customer",
+                description: "Unpause the AI for a specific customer so it resumes automatically answering them.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        phone_number: { type: "STRING", description: "The customer's phone number without the '+' sign (e.g., 628123456789)" }
+                    },
+                    required: ["phone_number"]
+                }
+            }, {
+                name: "message_customer",
+                description: "Unpause a specific customer AND generate a WhatsApp reply based on the staff's instructions. You MUST use this tool if a staff member asks you to tell a customer something.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        phone_number: { type: "STRING", description: "The customer's phone number without the '+' sign" },
+                        instruction: { type: "STRING", description: "The exact instruction of what you should say or do for the customer (e.g., 'tell them we can do 10% off'). You will automatically read their history and formulate the perfect response naturally." }
+                    },
+                    required: ["phone_number", "instruction"]
+                }
             }]
         }]
     };
@@ -121,6 +142,29 @@ async function callGeminiTelegram(text) {
                     const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${call.args.rule_text_match}%`);
                     if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
+                } else if (call.name === 'unpause_customer') {
+                    console.log(`[Telegram Tool] AI is running unpause_customer for: ${call.args.phone_number}`);
+                    const { error } = await supabase.from('pause_state').delete().eq('phone_number', call.args.phone_number);
+                    if (error) console.error("[Supabase Error] unpause_customer failed:", error.message);
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Customer unpaused." } } }] };
+                } else if (call.name === 'message_customer') {
+                    console.log(`[Telegram Tool] AI is running message_customer for: ${call.args.phone_number}`);
+                    
+                    // Unpause them first
+                    await supabase.from('pause_state').delete().eq('phone_number', call.args.phone_number);
+                    
+                    // Call the WhatsApp Gemini instance with the custom instruction injected
+                    const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${call.args.instruction}]` }] }];
+                    const botReply = await callGemini(call.args.phone_number, extraContext);
+                    
+                    if (botReply) {
+                        const delayMs = Math.min(2000 + (botReply.length * 30), 12000);
+                        await sleep(delayMs);
+                        await sendWhatsAppMessage(call.args.phone_number, botReply);
+                        funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: "success", generated_message: botReply } } }] };
+                    } else {
+                        funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: "failed", message: "Failed to generate a reply." } } }] };
+                    }
                 }
 
                 if (funcResCtx) {
