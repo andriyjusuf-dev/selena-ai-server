@@ -14,10 +14,11 @@
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.108.2",
     "axios": "^1.18.1",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "mammoth": "^1.6.0",
-    "node-cron": "^3.0.3",
+    "node-cron": "^4.5.0",
     "xlsx": "^0.18.5"
   }
 }
