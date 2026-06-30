@@ -468,23 +468,19 @@ async function handleBookingNotification(args, senderId) {
         console.error("Failed to save booking:", e.message);
     }
     
-    if (baliHour >= 18 || baliHour < 8) {
-        const msg = `🔔 *AFTER-HOURS BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}\nSpecial Requests: ${args.special_requests || "None"}`;
-        
-        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-            await sendTelegramAlert(msg);
-        } else {
-            for (const adminPhone of ADMIN_NUMBERS) {
-                if (adminPhone.trim().length > 0) {
-                    await sendWhatsAppMessage(adminPhone.trim(), msg);
-                    await sleep(500); // prevent rate limits
-                }
+    const msg = `🔔 *NEW BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}\nSpecial Requests: ${args.special_requests || "None"}`;
+    
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+        await sendTelegramAlert(msg);
+    } else {
+        for (const adminPhone of ADMIN_NUMBERS) {
+            if (adminPhone.trim().length > 0) {
+                await sendWhatsAppMessage(adminPhone.trim(), msg);
+                await sleep(500); // prevent rate limits
             }
         }
-        console.log(`[Booking] Alert sent to Admins.`);
-    } else {
-        console.log(`[Booking] Ignored for alert. It is daytime in Bali.`);
     }
+    console.log(`[Booking] Alert sent to Admins.`);
 }
 
 async function callGemini(senderId, extraContext = []) {
