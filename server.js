@@ -525,11 +525,12 @@ async function buildSystemPrompt(isEmail = false) {
     
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an EMAIL. Format your response professionally like an email with a proper greeting and sign-off.\n`;
-        basePrompt += `[SPAM FILTERING]: You are evaluating an incoming email. If this email is from a vendor, a newsletter, an internal staff member, or anything that is NOT a direct inquiry or conversation from a customer about scuba diving or bookings, you MUST reply ONLY with the exact word: IGNORE. Do not draft a reply for non-customer emails.\n\n`;
+        basePrompt += `[SPAM FILTERING]: You are evaluating an incoming email. If this email is from a vendor, a newsletter, an automated payment system (like Tab payments), an internal staff member, or anything that is NOT a direct inquiry from a customer, you MUST reply ONLY with the exact word: IGNORE. Do not draft a reply for these.\n\n`;
     }
     
     // Core Tools Instruction
-    basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking (via deposit screenshot) OR insists on paying on site, you MUST immediately use the 'record_booking' tool AND the 'manage_sheet_booking' tool (with action 'ADD'). ONLY do this ONCE per new booking. Do NOT call 'ADD' again on follow-up messages unless they are adding a new person or changing the date.\n`;
+    basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking (via deposit screenshot) OR insists on paying on site, you MUST use the 'manage_sheet_booking' tool to record them.\n`;
+    basePrompt += `PREVENT DOUBLE BOOKING: Before you use the 'ADD' action, you MUST ALWAYS use the 'SEARCH' action first to check if the customer's name is already on the sheet. If they are already booked for that date, DO NOT call 'ADD' again!\n`;
     basePrompt += `SHEET BOOKING RULES for 'manage_sheet_booking':\n`;
     basePrompt += `- Put all people in a group in ONE string. Format each person: [Name] [Product] [Deposit Status]. Separate with commas. End with 'specreq: [request]'.\n`;
     basePrompt += `- Products: Try Dive = TD, Fun Dive = FD [License] (e.g. FD OW), Dive Courses = [Product]C (e.g. OWC, AOWC, RESCC, EFRC, DMC).\n`;
@@ -943,11 +944,26 @@ async function runDailyFollowUps() {
 // ==========================================
 app.post('/gmail-webhook', async (req, res) => {
     try {
-        const { threadId, messageId, senderEmail, subject, body } = req.body;
+        const { threadId, messageId, senderEmail, subject, body, attachments } = req.body;
         
         console.log(`[Gmail] Received email from ${senderEmail}: ${subject}`);
         
-        const contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
+        let contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
+        
+        // Handle Email Attachments (like payment screenshots)
+        if (attachments && attachments.length > 0) {
+            for (const att of attachments) {
+                try {
+                    const buffer = Buffer.from(att.base64, 'base64');
+                    const mediaType = att.mimeType.startsWith('image') ? 'image' : 'document';
+                    const description = await analyzeMedia(buffer, att.mimeType, att.name, mediaType);
+                    contextToSave += `\n\n[Customer attached a file (${att.name}): ${description}]`;
+                    console.log(`[Gmail Media] Successfully analyzed attachment: ${att.name}`);
+                } catch (err) {
+                    console.error(`[Gmail Media] Failed to process attachment ${att.name}:`, err.message);
+                }
+            }
+        }
         
         // 1. Check Pause State
         const isPaused = await checkIsPaused(senderEmail);
