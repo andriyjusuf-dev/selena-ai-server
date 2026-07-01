@@ -525,7 +525,14 @@ async function buildSystemPrompt(isEmail = false) {
     
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an EMAIL. Format your response professionally like an email with a proper greeting and sign-off.\n`;
-        basePrompt += `[SPAM FILTERING]: You are evaluating an incoming email. If this email is from a vendor, a newsletter, an automated payment system (like Tab payments), an internal staff member, or anything that is NOT a direct inquiry from a customer, you MUST reply ONLY with the exact word: IGNORE. Do not draft a reply for these.\n\n`;
+        basePrompt += `[AUTOMATED PAYMENT RECEIPTS (e.g. Tab Travel)]:\n`;
+        basePrompt += `If this email is an automated payment receipt or booking confirmation from a system:\n`;
+        basePrompt += `1. You MUST use 'manage_sheet_booking' (SEARCH) to check if the customer is already on the sheet.\n`;
+        basePrompt += `2. If they are already booked on that date, do nothing.\n`;
+        basePrompt += `3. If they are NOT in the sheet, use 'manage_sheet_booking' (ADD) to record them.\n`;
+        basePrompt += `4. CRITICAL: Once you are done updating the sheet, you MUST output ONLY the exact word: IGNORE. Do not write a draft reply to an automated system!\n\n`;
+        
+        basePrompt += `[SPAM FILTERING]: If the email is marketing spam, a vendor newsletter, or irrelevant, output ONLY the exact word: IGNORE. Do not draft a reply for these.\n\n`;
     }
     
     // Core Tools Instruction
@@ -947,6 +954,15 @@ app.post('/gmail-webhook', async (req, res) => {
         const { threadId, messageId, senderEmail, subject, body, attachments } = req.body;
         
         console.log(`[Gmail] Received email from ${senderEmail}: ${subject}`);
+        
+        const senderEmailLower = senderEmail.toLowerCase();
+        const subjectLower = subject.toLowerCase();
+        
+        // HARD-CODED SPAM & SYSTEM FILTER (Bypasses AI completely)
+        if (senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) {
+            console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
+            return res.json({ action: "IGNORED" });
+        }
         
         let contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
         
