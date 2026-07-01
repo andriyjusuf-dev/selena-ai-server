@@ -258,7 +258,7 @@ app.post('/kiosk-chat', async (req, res) => {
         console.log(`[Kiosk] Received text: ${text}`);
         const extraContext = [{ 
             role: 'user', 
-            parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. They are speaking to you in this language: ${language || 'English'}. Reply in that language.]` }] 
+            parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. DO NOT use any emojis, emoticons, or action asterisks (like *smiles*), as they will be read awkwardly by the text-to-speech engine. Speak naturally with human intonation. They are speaking to you in this language: ${language || 'English'}. Reply in that language.]` }] 
         }];
         
         // Use a dedicated session ID for the Kiosk and force the Flash model for speed
