@@ -514,7 +514,7 @@ async function handleAdminCommand(adminId, commandText) {
     console.log(`[Admin Command] Added rule: ${rule}`);
 }
 
-async function buildSystemPrompt() {
+async function buildSystemPrompt(isEmail = false) {
     const { data, error } = await supabase
         .from('rules')
         .select('rule_text')
@@ -522,6 +522,11 @@ async function buildSystemPrompt() {
         
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\n[SYSTEM CLOCK: The current date and time is ${currentDate}].\n\nIMPORTANT: Use minimal, relevant, and nice emoticons. Do not overuse them. Keep your replies concise, friendly, and conversational. Do NOT send massive walls of text unless absolutely necessary to answer a complex question.\n\n`;
+    
+    if (isEmail) {
+        basePrompt += `[EMAIL MODE]: You are replying to an EMAIL. Format your response professionally like an email with a proper greeting and sign-off.\n`;
+        basePrompt += `[SPAM FILTERING]: You are evaluating an incoming email. If this email is from a vendor, a newsletter, an internal staff member, or anything that is NOT a direct inquiry or conversation from a customer about scuba diving or bookings, you MUST reply ONLY with the exact word: IGNORE. Do not draft a reply for non-customer emails.\n\n`;
+    }
     
     // Core Tools Instruction
     basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking (via deposit screenshot) OR insists on paying on site, you MUST immediately use the 'record_booking' tool AND the 'manage_sheet_booking' tool (with action 'ADD'). ONLY do this ONCE per new booking. Do NOT call 'ADD' again on follow-up messages unless they are adding a new person or changing the date.\n`;
@@ -582,12 +587,12 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro") {
+async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false) {
     let history = await getHistory(senderId);
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
     }
-    const systemPrompt = await buildSystemPrompt();
+    const systemPrompt = await buildSystemPrompt(isEmail);
     
     const payload = {
         system_instruction: { parts: [{ text: systemPrompt }] },
@@ -673,7 +678,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro")
                 }
                 
                 const funcResCtx = { role: "function", parts: funcResParts };
-                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
+                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail);
                 
                 if (firstTurnText && !recursiveReply) {
                     await appendHistory(senderId, "model", firstTurnText);
@@ -932,6 +937,47 @@ async function runDailyFollowUps() {
         }
     }
 }
+
+// ==========================================
+// 7. GMAIL WEBHOOK API
+// ==========================================
+app.post('/gmail-webhook', async (req, res) => {
+    try {
+        const { threadId, messageId, senderEmail, subject, body } = req.body;
+        
+        console.log(`[Gmail] Received email from ${senderEmail}: ${subject}`);
+        
+        const contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
+        
+        // 1. Check Pause State
+        const isPaused = await checkIsPaused(senderEmail);
+        
+        if (isPaused) {
+            await appendHistory(senderEmail, "user", contextToSave);
+            return res.json({ action: "PAUSED" });
+        }
+        
+        // 2. Append history and call Gemini
+        await appendHistory(senderEmail, "user", contextToSave);
+        const aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true);
+        
+        if (aiReply) {
+            if (aiReply.trim().toUpperCase() === "IGNORE") {
+                console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
+                return res.json({ action: "IGNORED" });
+            }
+            
+            // It's a real reply, tell Apps Script to create a draft
+            console.log(`[Gmail] Creating draft for ${senderEmail}`);
+            return res.json({ action: "DRAFT_CREATED", replyText: aiReply });
+        }
+        
+        res.json({ action: "ERROR" });
+    } catch (error) {
+        console.error("Gmail Webhook Error:", error);
+        res.json({ action: "ERROR" });
+    }
+});
 
 // Run every day at 10:00 AM server time
 cron.schedule('0 10 * * *', runDailyFollowUps);
