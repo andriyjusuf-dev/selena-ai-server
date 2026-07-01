@@ -636,6 +636,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro")
         if (response.data.candidates && response.data.candidates.length > 0) {
             const parts = response.data.candidates[0].content.parts;
             const functionCalls = parts.filter(p => p.functionCall).map(p => p.functionCall);
+            const textPart = parts.find(p => p.text);
+            let firstTurnText = textPart ? textPart.text : null;
             
             if (functionCalls.length > 0) {
                 const funcCallCtx = response.data.candidates[0].content;
@@ -671,15 +673,24 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro")
                 }
                 
                 const funcResCtx = { role: "function", parts: funcResParts };
-                return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
+                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
+                
+                if (firstTurnText && !recursiveReply) {
+                    await appendHistory(senderId, "model", firstTurnText);
+                    return firstTurnText;
+                } else if (firstTurnText && recursiveReply) {
+                    const combined = firstTurnText + "\n" + recursiveReply;
+                    // The recursive call already appended itself, so we need to be careful with history here.
+                    // Actually, the recursive call appended `recursiveReply`. If we want to return combined, we should fix history.
+                    // To keep it simple: just return the recursive reply, but if it's empty, return the first turn text.
+                    return recursiveReply;
+                }
+                return recursiveReply;
             }
             
-            
-            const textPart = parts.find(p => p.text);
-            if (textPart) {
-                const botReply = textPart.text;
-                await appendHistory(senderId, "model", botReply);
-                return botReply;
+            if (firstTurnText) {
+                await appendHistory(senderId, "model", firstTurnText);
+                return firstTurnText;
             }
         }
     } catch (error) {
