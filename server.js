@@ -524,7 +524,13 @@ async function buildSystemPrompt() {
     let basePrompt = `You are Selena, professional customer service agent for Sanctum Dive.\n[SYSTEM CLOCK: The current date and time is ${currentDate}].\n\nIMPORTANT: Use minimal, relevant, and nice emoticons. Do not overuse them. Keep your replies concise, friendly, and conversational. Do NOT send massive walls of text unless absolutely necessary to answer a complex question.\n\n`;
     
     // Core Tools Instruction
-    basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking by providing a deposit screenshot, OR if they insist on paying on site on the day, you MUST immediately use the 'record_booking' tool. If they provided a deposit screenshot, set status to '✅ FULLY CONFIRMED'. If they insist on paying on site, set status to '❓ NOT CONFIRMED (No Deposit)'.\n\n`;
+    basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking (via deposit screenshot) OR insists on paying on site, you MUST immediately use the 'record_booking' tool AND the 'manage_sheet_booking' tool.\n`;
+    basePrompt += `SHEET BOOKING RULES for 'manage_sheet_booking':\n`;
+    basePrompt += `- Put all people in a group in ONE string. Format each person: [Name] [Product] [Deposit Status]. Separate with commas. End with 'specreq: [request]'.\n`;
+    basePrompt += `- Products: Try Dive = TD, Fun Dive = FD [License] (e.g. FD OW), Dive Courses = [Product]C (e.g. OWC, AOWC, RESCC, EFRC, DMC).\n`;
+    basePrompt += `- Deposit: Paid Deposit = DPO. No Deposit = ?\n`;
+    basePrompt += `- Example: "Adrian TD DPO, James FD OW DPO, Sabrina RESCC DPO, specreq: dive together"\n`;
+    basePrompt += `- If a customer asks to verify their booking, use the 'SEARCH' action to look up their name in the sheet.\n\n`;
     
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
@@ -602,6 +608,21 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro")
                     },
                     required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
                 }
+            }, {
+                name: "manage_sheet_booking",
+                description: "Call this immediately when a customer confirms, reschedules, or cancels a booking, OR to search/verify an existing booking. This edits/reads the live Google Sheet schedule. You must format new_text exactly as instructed in SHEET BOOKING RULES.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                        target_date: { type: "STRING", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
+                        new_text: { type: "STRING", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
+                        old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
+                        old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'Adrian TD DPO')." },
+                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
+                    },
+                    required: ["action"]
+                }
             }]
         }]
     };
@@ -613,26 +634,50 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro")
         );
         
         if (response.data.candidates && response.data.candidates.length > 0) {
-            const part = response.data.candidates[0].content.parts[0];
+            const parts = response.data.candidates[0].content.parts;
+            const functionCalls = parts.filter(p => p.functionCall).map(p => p.functionCall);
             
-            if (part.functionCall) {
-                const call = part.functionCall;
-                if (call.name === 'record_booking') {
-                    await handleBookingNotification(call.args, senderId);
-                    
-                    const funcCallCtx = response.data.candidates[0].content;
-                    const funcResCtx = {
-                        role: "function",
-                        parts: [{ functionResponse: { name: call.name, response: { status: "success" } } }]
-                    };
-                    
-                    // Recursive call to get the final text response for the customer
-                    return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
+            if (functionCalls.length > 0) {
+                const funcCallCtx = response.data.candidates[0].content;
+                const funcResParts = [];
+                
+                for (const call of functionCalls) {
+                    if (call.name === 'record_booking') {
+                        await handleBookingNotification(call.args, senderId);
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
+                    } else if (call.name === 'manage_sheet_booking') {
+                        console.log(`[Google Sheets] Executing manage_sheet_booking: ${call.args.action}`);
+                        let sheetStatus = "error";
+                        let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+                        
+                        if (process.env.GOOGLE_SHEET_API_URL) {
+                            try {
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, call.args);
+                                sheetStatus = "success";
+                                sheetMessage = sheetRes.data.status || "Completed";
+                                
+                                // Send Telegram Alert
+                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                    const alertMsg = `📋 *SHEET UPDATE ALARM*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`;
+                                    await sendTelegramAlert(alertMsg);
+                                }
+                            } catch (err) {
+                                console.error("[Google Sheets API Error]", err.message);
+                                sheetMessage = err.message;
+                            }
+                        }
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    }
                 }
+                
+                const funcResCtx = { role: "function", parts: funcResParts };
+                return await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model);
             }
             
-            if (part.text) {
-                const botReply = part.text;
+            
+            const textPart = parts.find(p => p.text);
+            if (textPart) {
+                const botReply = textPart.text;
                 await appendHistory(senderId, "model", botReply);
                 return botReply;
             }
