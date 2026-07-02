@@ -116,7 +116,7 @@ async function callGeminiTelegram(text) {
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
@@ -181,7 +181,7 @@ async function callGeminiTelegram(text) {
                     };
                     
                     const res2 = await axios.post(
-                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
                         secondPayload
                     );
                     if (res2.data.candidates && res2.data.candidates.length > 0) {
@@ -601,7 +601,7 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callGemini(senderId, extraContext = [], model = "gemini-3-flash", isEmail = false, depth = 0) {
+async function callGemini(senderId, extraContext = [], model = "gemini-3.5-flash", isEmail = false, depth = 0) {
     if (depth > 3) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -903,7 +903,7 @@ If they were in the middle of inquiring and we should try to close the sale, rep
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
@@ -1025,7 +1025,7 @@ app.post('/gmail-webhook', async (req, res) => {
         
         // 2. Append history and call Gemini
         await appendHistory(senderEmail, "user", contextToSave);
-        const aiReply = await callGemini(senderEmail, [], "gemini-3-flash", true);
+        const aiReply = await callGemini(senderEmail, [], "gemini-3.5-flash", true);
         
         if (aiReply) {
             if (aiReply.trim().toUpperCase() === "IGNORE") {
