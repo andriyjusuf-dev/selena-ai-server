@@ -319,8 +319,9 @@ async function processWebhook(data) {
             if (statusList && statusList.length > 0) {
                 const statusObj = statusList[0];
                 if (statusObj.status === 'sent') {
+                    const msgId = statusObj.id;
                     const targetId = statusObj.recipient_id;
-                    const aiSent = cacheGet(`ai_sent_${targetId}`);
+                    const aiSent = cacheGet(msgId) || cacheGet(`ai_sent_${targetId}`);
                     
                     // If AI didn't send it, human did!
                     if (!aiSent && targetId) {
@@ -376,6 +377,7 @@ async function processWebhook(data) {
                     
                     if (isEcho) {
                         // Human is typing
+                        const msgId = messageObj.id;
                         let targetId = messageObj.to;
                         if (!targetId && value.contacts && value.contacts.length > 0) {
                             targetId = value.contacts[0].wa_id;
@@ -383,7 +385,7 @@ async function processWebhook(data) {
                         
                         // BUGFIX: Check if Selena actually sent this message just now.
                         // If she did, do NOT pause the AI!
-                        const aiSent = targetId ? cacheGet(`ai_sent_${targetId}`) : false;
+                        const aiSent = cacheGet(msgId) || (targetId ? cacheGet(`ai_sent_${targetId}`) : false);
                         
                         if (!aiSent) {
                             let contextToSave = textBody;
@@ -834,10 +836,13 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
     };
 
     try {
-        cacheSet(`ai_sent_${recipientPhone}`, "true", 15);
-        await axios.post(url, payload, {
+        cacheSet(`ai_sent_${recipientPhone}`, "true", 300);
+        const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
+        if (response.data && response.data.messages && response.data.messages.length > 0) {
+            cacheSet(response.data.messages[0].id, "true", 300);
+        }
         console.log(`[Sent] Message to ${recipientPhone}`);
     } catch (error) {
         console.error("WhatsApp Send Error:", error.response ? error.response.data : error.message);
@@ -859,10 +864,13 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
     };
 
     try {
-        cacheSet(`ai_sent_${recipientPhone}`, "true", 15);
-        await axios.post(url, payload, {
+        cacheSet(`ai_sent_${recipientPhone}`, "true", 300);
+        const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
+        if (response.data && response.data.messages && response.data.messages.length > 0) {
+            cacheSet(response.data.messages[0].id, "true", 300);
+        }
         console.log(`[Sent] Template ${templateName} to ${recipientPhone}`);
     } catch (error) {
         console.error("WhatsApp Template Send Error:", error.response ? JSON.stringify(error.response.data) : error.message);
