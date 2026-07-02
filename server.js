@@ -689,7 +689,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 sheetMessage = sheetRes.data.status || "Completed";
                                 
                                 // Send Telegram Alert
-                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH') {
+                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
                                     const alertMsg = `📋 *SHEET UPDATE ALARM*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`;
                                     await sendTelegramAlert(alertMsg);
                                 }
