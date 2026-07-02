@@ -598,7 +598,11 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false) {
+async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false, depth = 0) {
+    if (depth > 3) {
+        console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
+        return "IGNORE";
+    }
     let history = await getHistory(senderId);
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
@@ -626,7 +630,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                 }
             }, {
                 name: "manage_sheet_booking",
-                description: "Call this immediately when a customer confirms, reschedules, or cancels a booking, OR to search/verify an existing booking. This edits/reads the live Google Sheet schedule. You must format new_text exactly as instructed in SHEET BOOKING RULES.",
+                description: "Call this immediately when a customer confirms, reschedules, or cancels a booking, OR to search/verify an existing booking. This edits/reads the live Google Sheet schedule. You must format new_text exactly as instructed in SHEET BOOKING RULES. If the tool returns 'Skipped' or an error, DO NOT retry. Accept the result and move on.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -705,7 +709,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                 }
                 
                 const funcResCtx = { role: "function", parts: funcResParts };
-                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail);
+                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1);
                 
                 if (firstTurnText && !recursiveReply) {
                     await appendHistory(senderId, "model", firstTurnText);
