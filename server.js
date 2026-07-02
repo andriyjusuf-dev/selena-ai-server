@@ -313,7 +313,9 @@ async function processWebhook(data) {
     for (let i = 0; i < entry.changes.length; i++) {
         const change = entry.changes[i];
         const value = change.value;
-        
+        // Pause briefly to avoid race conditions with axios.post returning msgId
+        await sleep(1500);
+
         // --- A. STATUSES WEBHOOK (Gives us Customer ID for human takeover) ---
         if (change.field === 'statuses' || value.statuses) {
             const statusList = value.statuses;
@@ -321,7 +323,7 @@ async function processWebhook(data) {
                 const statusObj = statusList[0];
                 if (statusObj.status === 'sent') {
                     const msgId = statusObj.id;
-                    const targetId = statusObj.recipient_id;
+                    const targetId = statusObj.recipient_id ? statusObj.recipient_id.toString().replace(/\D/g, '') : null;
                     const aiSent = cacheGet(msgId) || cacheGet(`ai_sent_${targetId}`);
                     
                     // If AI didn't send it, human did!
@@ -383,6 +385,7 @@ async function processWebhook(data) {
                         if (!targetId && value.contacts && value.contacts.length > 0) {
                             targetId = value.contacts[0].wa_id;
                         }
+                        if (targetId) targetId = targetId.toString().replace(/\D/g, '');
                         
                         // BUGFIX: Check if Selena actually sent this message just now.
                         // If she did, do NOT pause the AI!
@@ -841,7 +844,8 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
     };
 
     try {
-        cacheSet(`ai_sent_${recipientPhone}`, "true", 300);
+        const cleanTo = recipientPhone.toString().replace(/\D/g, '');
+        cacheSet(`ai_sent_${cleanTo}`, "true", 300);
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
@@ -869,7 +873,8 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
     };
 
     try {
-        cacheSet(`ai_sent_${recipientPhone}`, "true", 300);
+        const cleanTo = recipientPhone.toString().replace(/\D/g, '');
+        cacheSet(`ai_sent_${cleanTo}`, "true", 300);
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
