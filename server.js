@@ -636,6 +636,16 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                     },
                     required: ["action"]
                 }
+            }, {
+                name: "notify_admin",
+                description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        message: { type: "STRING", description: "The message to send to the admins." }
+                    },
+                    required: ["message"]
+                }
             }]
         }]
     };
@@ -672,7 +682,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 sheetMessage = sheetRes.data.status || "Completed";
                                 
                                 // Send Telegram Alert
-                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH') {
                                     const alertMsg = `📋 *SHEET UPDATE ALARM*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`;
                                     await sendTelegramAlert(alertMsg);
                                 }
@@ -682,6 +692,12 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                             }
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    } else if (call.name === 'notify_admin') {
+                        console.log(`[Telegram Tool] AI is running notify_admin: ${call.args.message}`);
+                        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                            await sendTelegramAlert(`🚨 *SELENA ALERT*\n\n${call.args.message}`);
+                        }
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     }
                 }
                 
