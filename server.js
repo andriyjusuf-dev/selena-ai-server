@@ -52,7 +52,7 @@ async function sendTelegramAlert(textMessage) {
 async function callGeminiTelegram(text) {
     const systemPrompt = await buildSystemPrompt();
     const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
-    
+
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
         contents: [{ role: "user", parts: [{ text: text }] }],
@@ -121,7 +121,7 @@ async function callGeminiTelegram(text) {
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
             const part = response.data.candidates[0].content.parts[0];
-            
+
             if (part.functionCall) {
                 const call = part.functionCall;
                 let funcResCtx = null;
@@ -152,14 +152,14 @@ async function callGeminiTelegram(text) {
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Customer unpaused." } } }] };
                 } else if (call.name === 'message_customer') {
                     console.log(`[Telegram Tool] AI is running message_customer for: ${call.args.phone_number}`);
-                    
+
                     // Unpause them first
                     await supabase.from('pause_state').delete().eq('phone_number', call.args.phone_number);
-                    
+
                     // Call the WhatsApp Gemini instance with the custom instruction injected
                     const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${call.args.instruction}]` }] }];
                     const botReply = await callGemini(call.args.phone_number, extraContext);
-                    
+
                     if (botReply) {
                         const delayMs = Math.min(2000 + (botReply.length * 30), 12000);
                         await sleep(delayMs);
@@ -179,7 +179,7 @@ async function callGeminiTelegram(text) {
                             funcResCtx // the function response
                         ]
                     };
-                    
+
                     const res2 = await axios.post(
                         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
                         secondPayload
@@ -189,7 +189,7 @@ async function callGeminiTelegram(text) {
                     }
                 }
             }
-            
+
             if (part.text) {
                 return part.text;
             }
@@ -210,19 +210,19 @@ app.post('/telegram-webhook', async (req, res) => {
         if (chatId === TELEGRAM_CHAT_ID || update.message.chat.type === 'private') {
             const isMentioned = text.includes('@SelenaSanctumBot');
             const isPrivate = update.message.chat.type === 'private';
-            
+
             if (isMentioned || isPrivate) {
                 const cleanText = text.replace('@SelenaSanctumBot', '').trim();
                 if (cleanText.length === 0) return;
-                
+
                 console.log(`[Telegram] Question from staff: ${cleanText}`);
-                
+
                 try {
                     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendChatAction`, {
                         chat_id: chatId,
                         action: "typing"
                     });
-                    
+
                     const reply = await callGeminiTelegram(cleanText);
                     if (reply) {
                         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
@@ -254,14 +254,14 @@ app.get('/whatsapp-webhook', (req, res) => {
 app.post('/kiosk-chat', async (req, res) => {
     const { text, language } = req.body;
     if (!text) return res.status(400).send("No text provided");
-    
+
     try {
         console.log(`[Kiosk] Received text: ${text}`);
-        const extraContext = [{ 
-            role: 'user', 
-            parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. DO NOT use any emojis, emoticons, or action asterisks (like *smiles*), as they will be read awkwardly by the text-to-speech engine. Speak naturally with human intonation. They are speaking to you in this language: ${language || 'English'}. Reply in that language.]` }] 
+        const extraContext = [{
+            role: 'user',
+            parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. DO NOT use any emojis, emoticons, or action asterisks (like *smiles*), as they will be read awkwardly by the text-to-speech engine. Speak naturally with human intonation. They are speaking to you in this language: ${language || 'English'}. Reply in that language. If the customer wants to speak with a human, or if they ask a question you cannot answer, organically tell them to WhatsApp our Human Agent at +6281285325669.]` }]
         }];
-        
+
         // Use a dedicated session ID for the Kiosk and force the Flash model for speed
         const botReply = await callGemini('KIOSK_DESK_1', extraContext.concat([{ role: 'user', parts: [{ text: text }] }]), "gemini-3.1-flash-lite");
         return res.json({ reply: botReply || "Sorry, I am having trouble connecting to my brain right now." });
@@ -274,7 +274,7 @@ app.post('/kiosk-chat', async (req, res) => {
 app.post('/kiosk-translate', async (req, res) => {
     const { text, targetLanguage } = req.body;
     if (!text || !targetLanguage) return res.status(400).send("Missing text or language");
-    
+
     const payload = {
         system_instruction: { parts: [{ text: `You are a professional scuba diving translator. Translate the following text into ${targetLanguage}. ONLY reply with the translated text, absolutely no other commentary.` }] },
         contents: [{ role: "user", parts: [{ text: text }] }]
@@ -301,7 +301,7 @@ app.post('/kiosk-translate', async (req, res) => {
 app.post('/whatsapp-webhook', (req, res) => {
     // ALWAYS return 200 OK immediately to decouple and prevent Meta timeout
     res.status(200).send({ status: "success" });
-    
+
     // Process async
     processWebhook(req.body).catch(console.error);
 });
@@ -309,7 +309,7 @@ app.post('/whatsapp-webhook', (req, res) => {
 async function processWebhook(data) {
     if (data.object !== 'whatsapp_business_account') return;
     const entry = data.entry[0];
-    
+
     for (let i = 0; i < entry.changes.length; i++) {
         const change = entry.changes[i];
         const value = change.value;
@@ -325,7 +325,7 @@ async function processWebhook(data) {
                     const msgId = statusObj.id;
                     const targetId = statusObj.recipient_id ? statusObj.recipient_id.toString().replace(/\D/g, '') : null;
                     const aiSent = cacheGet(msgId) || cacheGet(`ai_sent_${targetId}`);
-                    
+
                     // If AI didn't send it, human did!
                     if (!aiSent && targetId) {
                         cacheSet(`last_paused_target`, targetId, 15);
@@ -343,20 +343,20 @@ async function processWebhook(data) {
                 }
             }
         }
-        
+
         // --- B. MESSAGES / ECHOES WEBHOOK ---
         if (change.field === 'messages' || change.field === 'smb_message_echoes' || change.field === 'message_echoes') {
             const messageList = value.messages || value.message_echoes || value.smb_message_echoes;
             if (messageList && messageList.length > 0) {
                 const messageObj = messageList[0];
-                
+
                 const validTypes = ['text', 'image', 'audio', 'document', 'system', 'unsupported'];
                 if (validTypes.includes(messageObj.type)) {
                     let textBody = "";
                     let isMedia = false;
                     let mediaType = null;
                     let mediaId = null;
-                    
+
                     if (messageObj.type === 'text') {
                         textBody = messageObj.text.body;
                     } else if (messageObj.type === 'image') {
@@ -377,9 +377,9 @@ async function processWebhook(data) {
                     } else if (messageObj.type === 'system' || messageObj.type === 'unsupported') {
                         textBody = "[SYSTEM SIGNAL: Customer attempted to start a voice/video call or sent an unsupported attachment. You cannot accept voice calls. Politely greet them, mention you are the chat agent (Selena), and ask how you can help them over text instead.]";
                     }
-                    
+
                     const isEcho = (change.field === 'smb_message_echoes' || change.field === 'message_echoes' || messageObj.from_me === true);
-                    
+
                     if (isEcho) {
                         // Human is typing
                         const msgId = messageObj.id;
@@ -388,15 +388,15 @@ async function processWebhook(data) {
                             targetId = value.contacts[0].wa_id;
                         }
                         if (targetId) targetId = targetId.toString().replace(/\D/g, '');
-                        
+
                         // BUGFIX: Check if Selena actually sent this message just now.
                         // If she did, do NOT pause the AI!
                         const aiSent = cacheGet(msgId) || (targetId ? cacheGet(`ai_sent_${targetId}`) : false);
-                        
+
                         if (!aiSent) {
                             let contextToSave = textBody;
                             if (isMedia) contextToSave = `[Human agent sent a ${mediaType}: ${textBody}]`;
-                            
+
                             if (targetId) {
                                 await pauseAI(targetId, contextToSave);
                             } else {
@@ -411,16 +411,16 @@ async function processWebhook(data) {
                     } else {
                         // Customer or Admin is typing
                         const senderId = messageObj.from;
-                        
+
                         // 1. Check for Admin Training Command
                         if (!isMedia && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
                             await handleAdminCommand(senderId, textBody);
                             return;
                         }
-                        
+
                         // 2. Normal Customer Message
                         const isPaused = await checkIsPaused(senderId);
-                        
+
                         let contextToSave = textBody;
                         if (isMedia) {
                             console.log(`[Media Received] Analyzing ${mediaType} from ${senderId}...`);
@@ -432,7 +432,7 @@ async function processWebhook(data) {
                                 contextToSave = `[Customer sent a ${mediaType}, but it could not be downloaded] ${textBody}`;
                             }
                         }
-                        
+
                         if (isPaused) {
                             await appendHistory(senderId, "user", contextToSave);
                         } else {
@@ -441,9 +441,9 @@ async function processWebhook(data) {
                             if (geminiReply) {
                                 // Realistic typing delay: 2s base + 30ms per char (Max 12 seconds)
                                 const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
-                                console.log(`[Typing Delay] Waiting ${delayMs/1000} seconds...`);
+                                console.log(`[Typing Delay] Waiting ${delayMs / 1000} seconds...`);
                                 await sleep(delayMs);
-                                
+
                                 await sendWhatsAppMessage(senderId, geminiReply);
                             }
                         }
@@ -464,12 +464,12 @@ async function getHistory(senderId) {
         .eq('phone_number', senderId)
         .order('created_at', { ascending: false })
         .limit(10);
-        
+
     if (error) {
         console.error("Supabase Error (getHistory):", error);
         return [];
     }
-    
+
     // Reverse so oldest is first
     return data.reverse().map(row => ({
         role: row.role,
@@ -489,7 +489,7 @@ async function checkIsPaused(senderId) {
         .select('paused_until')
         .eq('phone_number', senderId)
         .single();
-        
+
     if (data && data.paused_until) {
         const pausedUntil = new Date(data.paused_until);
         if (pausedUntil > new Date()) {
@@ -503,12 +503,12 @@ async function pauseAI(senderId, humanMessage) {
     // Pause for 10 minutes
     const pausedUntil = new Date();
     pausedUntil.setMinutes(pausedUntil.getMinutes() + 10);
-    
+
     await supabase.from('pause_state').upsert({
         phone_number: senderId,
         paused_until: pausedUntil.toISOString()
     });
-    
+
     await appendHistory(senderId, "model", humanMessage);
     console.log(`[Auto-Pause] Paused AI for ${senderId}. Saved human context.`);
 }
@@ -527,14 +527,14 @@ async function buildSystemPrompt(isEmail = false) {
         .from('rules')
         .select('rule_text')
         .order('created_at', { ascending: true });
-        
+
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. Keep replies short, conversational, minimal emojis.\n\n`;
-    
+
     if (isEmail) {
         basePrompt += `[EMAIL]: Reply professionally.\nIf automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf spam: output ONLY: IGNORE.\n\n`;
     }
-    
+
     // Core Tools Instruction
     basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first.\n`;
@@ -544,7 +544,7 @@ async function buildSystemPrompt(isEmail = false) {
     basePrompt += `RULES: "[Name] [Product] [Deposit]. specreq: [req]"\n`;
     basePrompt += `Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
     basePrompt += `Ex: "Adrian TD DPO, Sabrina RESCC ?, specreq: none"\n\n`;
-    
+
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
         data.forEach((r, idx) => {
@@ -552,7 +552,7 @@ async function buildSystemPrompt(isEmail = false) {
         });
         basePrompt += "-------------------------\n";
     }
-    
+
     return basePrompt;
 }
 
@@ -562,9 +562,9 @@ async function buildSystemPrompt(isEmail = false) {
 async function handleBookingNotification(args, senderId) {
     const now = new Date();
     const baliHour = (now.getUTCHours() + 8) % 24;
-    
+
     console.log(`[Booking] Detected booking. Bali Hour: ${baliHour}`);
-    
+
     // Save to Database
     try {
         await supabase.from('bookings').insert([{
@@ -579,9 +579,9 @@ async function handleBookingNotification(args, senderId) {
     } catch (e) {
         console.error("Failed to save booking:", e.message);
     }
-    
+
     const msg = `🔔 *NEW BOOKING ALERT*\n\nStatus: ${args.status}\nCustomer: ${args.customer_name} (+${senderId})\nDate: ${args.dive_date}\nPax: ${args.pax}\nType: ${args.dive_type}\nSpecial Requests: ${args.special_requests || "None"}`;
-    
+
     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
         await sendTelegramAlert(msg);
     } else {
@@ -605,7 +605,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
         history = history.concat(extraContext);
     }
     const systemPrompt = await buildSystemPrompt(isEmail);
-    
+
     const payload = {
         system_instruction: { parts: [{ text: systemPrompt }] },
         contents: history,
@@ -659,7 +659,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
             `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
-        
+
         if (response.data.candidates && response.data.candidates.length > 0) {
             const content = response.data.candidates[0].content;
             if (!content || !content.parts) {
@@ -670,11 +670,11 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
             const functionCalls = parts.filter(p => p.functionCall).map(p => p.functionCall);
             const textPart = parts.find(p => p.text);
             let firstTurnText = textPart ? textPart.text : null;
-            
+
             if (functionCalls.length > 0) {
                 const funcCallCtx = response.data.candidates[0].content;
                 const funcResParts = [];
-                
+
                 for (const call of functionCalls) {
                     if (call.name === 'record_booking') {
                         await handleBookingNotification(call.args, senderId);
@@ -683,13 +683,13 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                         console.log(`[Google Sheets] Executing manage_sheet_booking: ${call.args.action}`);
                         let sheetStatus = "error";
                         let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
-                        
+
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, call.args);
                                 sheetStatus = "success";
                                 sheetMessage = sheetRes.data.status || "Completed";
-                                
+
                                 // Send Telegram Alert
                                 if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
                                     const alertMsg = `📋 *SHEET UPDATE ALARM*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`;
@@ -709,10 +709,10 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     }
                 }
-                
+
                 const funcResCtx = { role: "function", parts: funcResParts };
                 const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1);
-                
+
                 if (firstTurnText && !recursiveReply) {
                     await appendHistory(senderId, "model", firstTurnText);
                     return firstTurnText;
@@ -725,7 +725,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                 }
                 return recursiveReply;
             }
-            
+
             if (firstTurnText) {
                 await appendHistory(senderId, "model", firstTurnText);
                 return firstTurnText;
@@ -748,13 +748,13 @@ async function downloadMetaMedia(mediaId) {
         });
         const mediaUrl = metaRes.data.url;
         const mimeType = metaRes.data.mime_type;
-        
+
         // 2. Download binary data
         const downloadRes = await axios.get(mediaUrl, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
             responseType: 'arraybuffer'
         });
-        
+
         const buffer = Buffer.from(downloadRes.data, 'binary');
         const base64Data = buffer.toString('base64');
         return { buffer, base64Data, mimeType };
@@ -780,7 +780,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
             return `Failed to parse spreadsheet: ${e.message}`;
         }
     }
-    
+
     // 2. Parse Word Documents
     if (mimeType.includes('wordprocessingml') || mimeType === 'application/msword') {
         try {
@@ -790,7 +790,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
             return `Failed to parse Word Document (Note: old .doc formats may not be supported. Ask for PDF): ${e.message}`;
         }
     }
-    
+
     // 3. For natively supported Gemini formats (Audio, PDF, Images)
     let prompt = "";
     if (mediaType === 'audio') {
@@ -820,7 +820,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
             `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
-        
+
         if (response.data.candidates && response.data.candidates.length > 0) {
             return response.data.candidates[0].content.parts[0].text;
         }
@@ -833,7 +833,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
 
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
-    
+
     const payload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -859,7 +859,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 
 async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode = "en") {
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
-    
+
     const payload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -917,7 +917,7 @@ If they were in the middle of inquiring and we should try to close the sale, rep
 
 async function runDailyFollowUps() {
     console.log("[Cron] Running daily follow-up checks...");
-    
+
     // Only fetch messages from the last 10 days to stay well under the 1000 row limit
     const tenDaysAgo = new Date();
     tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
@@ -927,7 +927,7 @@ async function runDailyFollowUps() {
         .select('phone_number, message_text, created_at')
         .gte('created_at', tenDaysAgo.toISOString())
         .order('created_at', { ascending: false });
-        
+
     if (error || !convos) return;
 
     // Group by phone number to find the LATEST message for each
@@ -950,29 +950,29 @@ async function runDailyFollowUps() {
 
             const history = await getHistory(phone);
             const shouldFollowUp = await evaluateFollowup(history, 2);
-            
+
             if (shouldFollowUp) {
                 await sendWhatsAppTemplate(phone, "sales_followup", "en");
                 await appendHistory(phone, "model", "[Sent 2-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 2-day follow up to ${phone}`);
-                
+
                 // Wait 5 seconds between messages so Meta doesn't flag us for spam
-                await sleep(5000); 
+                await sleep(5000);
             }
         }
-        
+
         // Check 7-day follow up (between 168 and 192 hours)
         else if (hoursSilent >= 168 && hoursSilent < 192) {
             if (lastMsg.message_text.includes("checking in one last time") || lastMsg.message_text.includes("[Sent 7-Day Follow-Up Template]")) continue;
 
             const history = await getHistory(phone);
             const shouldFollowUp = await evaluateFollowup(history, 7);
-            
+
             if (shouldFollowUp) {
                 await sendWhatsAppTemplate(phone, "sales_followup", "en");
                 await appendHistory(phone, "model", "[Sent 7-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 7-day follow up to ${phone}`);
-                
+
                 await sleep(5000);
             }
         }
@@ -985,20 +985,20 @@ async function runDailyFollowUps() {
 app.post('/gmail-webhook', async (req, res) => {
     try {
         const { threadId, messageId, senderEmail, subject, body, attachments } = req.body;
-        
+
         console.log(`[Gmail] Received email from ${senderEmail}: ${subject}`);
-        
+
         const senderEmailLower = senderEmail.toLowerCase();
         const subjectLower = subject.toLowerCase();
-        
+
         // HARD-CODED SPAM & SYSTEM FILTER (Bypasses AI completely)
         if (senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
         }
-        
+
         let contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
-        
+
         // Handle Email Attachments (like payment screenshots)
         if (attachments && attachments.length > 0) {
             for (const att of attachments) {
@@ -1013,30 +1013,30 @@ app.post('/gmail-webhook', async (req, res) => {
                 }
             }
         }
-        
+
         // 1. Check Pause State
         const isPaused = await checkIsPaused(senderEmail);
-        
+
         if (isPaused) {
             await appendHistory(senderEmail, "user", contextToSave);
             return res.json({ action: "PAUSED" });
         }
-        
+
         // 2. Append history and call Gemini
         await appendHistory(senderEmail, "user", contextToSave);
         const aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true);
-        
+
         if (aiReply) {
             if (aiReply.trim().toUpperCase() === "IGNORE") {
                 console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
                 return res.json({ action: "IGNORED" });
             }
-            
+
             // It's a real reply, tell Apps Script to create a draft
             console.log(`[Gmail] Creating draft for ${senderEmail}`);
             return res.json({ action: "DRAFT_CREATED", replyText: aiReply });
         }
-        
+
         res.json({ action: "ERROR" });
     } catch (error) {
         console.error("Gmail Webhook Error:", error);
