@@ -529,10 +529,13 @@ async function buildSystemPrompt(isEmail = false) {
         .order('created_at', { ascending: true });
 
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. Keep replies short, conversational, minimal emojis.\n\n`;
+    let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. `;
 
     if (isEmail) {
-        basePrompt += `[EMAIL]: Reply professionally.\nIf automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf spam: output ONLY: IGNORE.\n\n`;
+        basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
+        basePrompt += `If automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf spam: output ONLY: IGNORE.\n\n`;
+    } else {
+        basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
     }
 
     // Core Tools Instruction
