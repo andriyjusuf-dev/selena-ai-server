@@ -545,6 +545,7 @@ async function buildSystemPrompt(isEmail = false) {
     basePrompt += `Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
     basePrompt += `Ex: "Adrian TD DPO, Sabrina RESCC ?, specreq: none"\n\n`;
 
+
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
         data.forEach((r, idx) => {
@@ -844,7 +845,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 
     try {
         const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 300);
+        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced from 300s to 5s to allow human takeover
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
@@ -873,7 +874,7 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
 
     try {
         const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 300);
+        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced from 300s to 5s to allow human takeover
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
