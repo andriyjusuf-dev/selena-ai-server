@@ -661,7 +661,12 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
         );
         
         if (response.data.candidates && response.data.candidates.length > 0) {
-            const parts = response.data.candidates[0].content.parts;
+            const content = response.data.candidates[0].content;
+            if (!content || !content.parts) {
+                console.error("[Gemini] API returned empty content (Safety Filter). Ignoring.");
+                return null;
+            }
+            const parts = content.parts;
             const functionCalls = parts.filter(p => p.functionCall).map(p => p.functionCall);
             const textPart = parts.find(p => p.text);
             let firstTurnText = textPart ? textPart.text : null;
@@ -812,7 +817,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-8b:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         
