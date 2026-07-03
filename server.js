@@ -350,7 +350,7 @@ async function processWebhook(data) {
             if (messageList && messageList.length > 0) {
                 const messageObj = messageList[0];
                 
-                const validTypes = ['text', 'image', 'audio', 'document'];
+                const validTypes = ['text', 'image', 'audio', 'document', 'system', 'unsupported'];
                 if (validTypes.includes(messageObj.type)) {
                     let textBody = "";
                     let isMedia = false;
@@ -374,6 +374,8 @@ async function processWebhook(data) {
                         mediaType = 'document';
                         mediaId = messageObj.document.id;
                         textBody = messageObj.document.caption || messageObj.document.filename || "";
+                    } else if (messageObj.type === 'system' || messageObj.type === 'unsupported') {
+                        textBody = "[SYSTEM SIGNAL: Customer attempted to start a voice/video call or sent an unsupported attachment. You cannot accept voice calls. Politely greet them, mention you are the chat agent (Selena), and ask how you can help them over text instead.]";
                     }
                     
                     const isEcho = (change.field === 'smb_message_echoes' || change.field === 'message_echoes' || messageObj.from_me === true);
@@ -543,13 +545,15 @@ async function buildSystemPrompt(isEmail = false) {
     
     // Core Tools Instruction
     basePrompt += `CRITICAL INSTRUCTION: Whenever a customer confirms a booking (via deposit screenshot) OR insists on paying on site, you MUST use the 'manage_sheet_booking' tool to record them.\n`;
-    basePrompt += `PREVENT DOUBLE BOOKING: Before you use the 'ADD' action, you MUST ALWAYS use the 'SEARCH' action first to check if the customer's name is already on the sheet. If they are already booked for that date, DO NOT call 'ADD' again!\n`;
+    basePrompt += `LIFECYCLE & AVOIDING DOUBLE BOOKING: Before using the 'ADD' action, ALWAYS use the 'SEARCH' action to read their history in the sheet.\n`;
+    basePrompt += `- If they are a NEW customer, use the 'ADD' action.\n`;
+    basePrompt += `- If they are an EXISTING customer updating their status (e.g., changing unpaid '?' to paid 'DPO', adding a person, or rescheduling to a new date), you MUST use the 'UPDATE' action. Provide 'old_date' and 'old_text_match' to find and replace their old entry.\n`;
+    basePrompt += `- If an existing customer CANCELS, you MUST use the 'REMOVE' action with 'old_date' and 'old_text_match' to wipe them off the schedule completely.\n`;
     basePrompt += `SHEET BOOKING RULES for 'manage_sheet_booking':\n`;
     basePrompt += `- Put all people in a group in ONE string. Format each person: [Name] [Product] [Deposit Status]. Separate with commas. End with 'specreq: [request]'.\n`;
     basePrompt += `- Products: Try Dive = TD, Fun Dive = FD [License] (e.g. FD OW), Dive Courses = [Product]C (e.g. OWC, AOWC, RESCC, EFRC, DMC).\n`;
     basePrompt += `- Deposit: Paid Deposit = DPO. No Deposit = ?\n`;
-    basePrompt += `- Example: "Adrian TD DPO, James FD OW DPO, Sabrina RESCC DPO, specreq: dive together"\n`;
-    basePrompt += `- If a customer asks to verify their booking, use the 'SEARCH' action to look up their name in the sheet.\n\n`;
+    basePrompt += `- Example: "Adrian TD DPO, James FD OW DPO, Sabrina RESCC DPO, specreq: dive together"\n\n`;
     
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
