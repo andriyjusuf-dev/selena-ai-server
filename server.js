@@ -685,7 +685,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                         await handleBookingNotification(call.args, senderId);
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     } else if (call.name === 'manage_sheet_booking') {
-                        console.log(`[Google Sheets] Executing manage_sheet_booking: ${call.args.action}`);
+                        console.log(`[Google Sheets] Executing manage_sheet_booking: ${call.args.action} | Args: ${JSON.stringify(call.args)}`);
                         let sheetStatus = "error";
                         let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
 
@@ -694,6 +694,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, call.args);
                                 sheetStatus = "success";
                                 sheetMessage = sheetRes.data.status || "Completed";
+                                console.log(`[Google Sheets] Response: ${sheetMessage}`);
 
                                 // Send Telegram Alert
                                 if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
