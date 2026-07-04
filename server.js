@@ -419,6 +419,29 @@ async function processWebhook(data) {
                         }
 
                         // 2. Normal Customer Message
+
+                        // GLOBAL PAUSE & NIGHT MODE LOGIC
+                        if (process.env.AI_PAUSED === 'true') {
+                            console.log(`[System] AI_PAUSED is active. Ignoring message from ${senderId}.`);
+                            return;
+                        }
+
+                        if (process.env.NIGHT_MODE_ONLY === 'true') {
+                            const now = new Date();
+                            const baliFormatter = new Intl.DateTimeFormat('en-US', {
+                                timeZone: 'Asia/Makassar',
+                                hour: '2-digit',
+                                hour12: false
+                            });
+                            const currentHour = parseInt(baliFormatter.format(now));
+                            // Allow between 19 (7 PM) and 7 (7:59 AM)
+                            // Which means ignore if >= 8 and < 19
+                            if (currentHour >= 8 && currentHour < 19) {
+                                console.log(`[System] Night Mode Active (Bali time). Current hour is ${currentHour}. Ignoring message from ${senderId}.`);
+                                return;
+                            }
+                        }
+
                         const isPaused = await checkIsPaused(senderId);
 
                         let contextToSave = textBody;
