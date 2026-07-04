@@ -540,7 +540,7 @@ async function buildSystemPrompt(isEmail = false) {
 
     // Core Tools Instruction
     basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
-    basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. IMPORTANT: Use ONLY the customer's First Name as the search_query to guarantee you find them even if their last name is missing.\n`;
+    basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. IMPORTANT: If you do not know the customer's name AND their booking date, ASK them for both first! Then, use ONLY their First Name as the search_query to guarantee you find them even if their last name is missing.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name (even if last name/initial differs, or deposit is ? vs DPO), DO NOT use 'ADD'. Use 'UPDATE' to modify it, or just inform them they are already booked.\n`;
     basePrompt += `- New customer (no existing booking)? 'ADD'.\n`;
     basePrompt += `- Existing customer updating (deposit from ? to DPO, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
@@ -849,7 +849,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 
     try {
         const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced from 300s to 5s to allow human takeover
+        cacheSet(`ai_sent_${cleanTo}`, "true", 120); // BUGFIX: Set to 120s (2 min) to handle Render cold starts
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
