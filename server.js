@@ -694,7 +694,11 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                             try {
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, call.args);
                                 sheetStatus = "success";
-                                sheetMessage = sheetRes.data.status || "Completed";
+                                if (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) {
+                                    sheetMessage = "Google Apps Script crashed or returned an HTML error page. The search failed. Tell the user there was a technical error accessing the sheet.";
+                                } else {
+                                    sheetMessage = sheetRes.data.status || "Completed";
+                                }
                                 console.log(`[Google Sheets] Response: ${sheetMessage}`);
 
                                 // Send Telegram Alert
