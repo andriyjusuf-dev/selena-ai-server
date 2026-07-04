@@ -878,7 +878,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 
     try {
         const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 120); // BUGFIX: Set to 120s (2 min) to handle Render cold starts
+        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced to 5s to allow human takeover without breaking race condition
         const response = await axios.post(url, payload, {
             headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
         });
