@@ -541,7 +541,7 @@ async function buildSystemPrompt(isEmail = false) {
     // Core Tools Instruction
     basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
-    basePrompt += `IMPORTANT: If you do not know the customer's name AND their booking date, ASK them for both first! Then, use ONLY their First Name as the search_query to guarantee you find them even if their last name is missing.\n`;
+    basePrompt += `IMPORTANT: If you do not know the customer's name AND their booking date, ASK them for both first! Then, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., if name is "Eunjeen", search for "Eun") to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name (even if last name/initial differs, or deposit is ? vs DPO), DO NOT use 'ADD'. Use 'UPDATE' to modify it, or just inform them they are already booked.\n`;
     basePrompt += `- New customer (no existing booking)? 'ADD'.\n`;
     basePrompt += `- Existing customer updating (deposit from ? to DPO, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
