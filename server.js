@@ -540,7 +540,7 @@ async function buildSystemPrompt(isEmail = false) {
 
     // Core Tools Instruction
     basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
-    basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first.\n`;
+    basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. IMPORTANT: Use ONLY the customer's First Name as the search_query to guarantee you find them even if their last name is missing.\n`;
     basePrompt += `- New customer? 'ADD'.\n`;
     basePrompt += `- Existing customer updating (deposit, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
     basePrompt += `- Canceled? 'REMOVE'.\n`;
