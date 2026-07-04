@@ -541,8 +541,9 @@ async function buildSystemPrompt(isEmail = false) {
     // Core Tools Instruction
     basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. IMPORTANT: Use ONLY the customer's First Name as the search_query to guarantee you find them even if their last name is missing.\n`;
-    basePrompt += `- New customer? 'ADD'.\n`;
-    basePrompt += `- Existing customer updating (deposit, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
+    basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name (even if last name/initial differs, or deposit is ? vs DPO), DO NOT use 'ADD'. Use 'UPDATE' to modify it, or just inform them they are already booked.\n`;
+    basePrompt += `- New customer (no existing booking)? 'ADD'.\n`;
+    basePrompt += `- Existing customer updating (deposit from ? to DPO, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
     basePrompt += `- Canceled? 'REMOVE'.\n`;
     basePrompt += `RULES: "[Name] [Product] [Deposit]. specreq: [req]"\n`;
     basePrompt += `Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
