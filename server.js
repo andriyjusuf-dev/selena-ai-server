@@ -110,6 +110,16 @@ async function callGeminiTelegram(text) {
                     },
                     required: ["phone_number", "instruction"]
                 }
+            }, {
+                name: "search_sheet_booking",
+                description: "Search the live Google Sheet schedule for a customer's booking. ALWAYS use this if staff asks to check the sheet.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." }
+                    },
+                    required: ["search_query"]
+                }
             }]
         }]
     };
@@ -133,7 +143,7 @@ async function callGeminiTelegram(text) {
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }] };
                 } else if (call.name === 'list_rules') {
                     console.log(`[Telegram Tool] AI is running list_rules`);
-                    const { data, error } = await supabase.from('rules').select('rule_text').order('created_at', { ascending: true });
+                    const { data, error } = await supabase.from('rules').select('rule_text').order('id', { ascending: true });
                     funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { rules: data || [], error: error ? error.message : null } } }] };
                 } else if (call.name === 'add_rule') {
                     console.log(`[Telegram Tool] AI is running add_rule with text: ${call.args.rule_text}`);
@@ -168,6 +178,20 @@ async function callGeminiTelegram(text) {
                     } else {
                         funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: "failed", message: "Failed to generate a reply." } } }] };
                     }
+                } else if (call.name === 'search_sheet_booking') {
+                    console.log(`[Telegram Tool] AI is running search_sheet_booking for: ${call.args.search_query}`);
+                    let sheetStatus = "error";
+                    let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+                    if (process.env.GOOGLE_SHEET_API_URL) {
+                        try {
+                            const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
+                            sheetStatus = "success";
+                            sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
+                        } catch (err) {
+                            sheetMessage = err.message;
+                        }
+                    }
+                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } }] };
                 }
 
                 if (funcResCtx) {
@@ -549,7 +573,7 @@ async function buildSystemPrompt(isEmail = false) {
     const { data, error } = await supabase
         .from('rules')
         .select('rule_text')
-        .order('created_at', { ascending: true });
+        .order('id', { ascending: true });
 
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. `;
@@ -635,12 +659,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
     }
     const systemPrompt = await buildSystemPrompt(isEmail);
 
-    const payload = {
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: history,
-        tools: [{
-            function_declarations: [{
-                name: "record_booking",
+    let funcDecls = [{
+        name: "record_booking",
                 description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'",
                 parameters: {
                     type: "OBJECT",
@@ -679,7 +699,27 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                     },
                     required: ["message"]
                 }
-            }]
+            }, {
+                name: "search_sheet_booking",
+                description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." }
+                    },
+                    required: ["search_query"]
+                }
+            }];
+
+    if (senderId === 'KIOSK_DESK_1') {
+        funcDecls = funcDecls.filter(t => t.name !== 'manage_sheet_booking');
+    }
+
+    const payload = {
+        system_instruction: { parts: [{ text: systemPrompt }] },
+        contents: history,
+        tools: [{
+            function_declarations: funcDecls
         }]
     };
 
@@ -731,6 +771,20 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 }
                             } catch (err) {
                                 console.error("[Google Sheets API Error]", err.message);
+                                sheetMessage = err.message;
+                            }
+                        }
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    } else if (call.name === 'search_sheet_booking') {
+                        console.log(`[Google Sheets] Executing search_sheet_booking | Args: ${JSON.stringify(call.args)}`);
+                        let sheetStatus = "error";
+                        let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+                        if (process.env.GOOGLE_SHEET_API_URL) {
+                            try {
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
+                                sheetStatus = "success";
+                                sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
+                            } catch (err) {
                                 sheetMessage = err.message;
                             }
                         }
