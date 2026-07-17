@@ -1080,7 +1080,11 @@ app.post('/gmail-webhook', async (req, res) => {
         const subjectLower = subject.toLowerCase();
 
         // HARD-CODED SPAM & SYSTEM FILTER (Bypasses AI completely)
-        if (senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) {
+        if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) &&
+            !senderEmailLower.includes('viator') && 
+            !senderEmailLower.includes('bokun') &&
+            !senderEmailLower.includes('getyourguide') // Good measure for tours
+        ) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
         }
