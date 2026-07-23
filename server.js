@@ -586,16 +586,15 @@ async function buildSystemPrompt(isEmail = false) {
     }
 
     // Core Tools Instruction
-    basePrompt += `CRITICAL: Record confirmed/pay-on-site bookings via 'manage_sheet_booking'.\n`;
+    basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
     basePrompt += `IMPORTANT: If you do not know the customer's name AND their booking date, ASK them for both first! Then, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., if name is "Eunjeen", search for "Eun") to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
-    basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name (even if last name/initial differs, or deposit is ? vs DPO), DO NOT use 'ADD'. Use 'UPDATE' to modify it, or just inform them they are already booked.\n`;
-    basePrompt += `- New customer (no existing booking)? 'ADD'.\n`;
-    basePrompt += `- Existing customer updating (deposit from ? to DPO, pax, reschedule)? 'UPDATE' (use old_date, old_text_match).\n`;
-    basePrompt += `- Canceled? 'REMOVE'.\n`;
-    basePrompt += `RULES: "[Name] [Product] [Deposit]. specreq: [req]"\n`;
-    basePrompt += `Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
-    basePrompt += `Ex: "Adrian TD DPO, Sabrina RESCC ?, specreq: none"\n\n`;
+    basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
+    basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
+    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]. specreq: [req]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
+    basePrompt += `Ex: "Adrian TD DPO, Sabrina RESCC ?, specreq: none"\n`;
+    basePrompt += `--- HOTEL BOOKINGS ('manage_hotel_booking') ---\n`;
+    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n\n`;
 
 
     if (data && data.length > 0) {
@@ -709,10 +708,34 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                     },
                     required: ["search_query"]
                 }
+            }, {
+                name: "manage_hotel_booking",
+                description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                        target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
+                        guest_name: { type: "STRING", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
+                        old_guest_match: { type: "STRING", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
+                        search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
+                    },
+                    required: ["action"]
+                }
+            }, {
+                name: "search_hotel_booking",
+                description: "Search the live Hotel calendar for a customer's booking without modifying it.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        search_query: { type: "STRING", description: "Guest name or string to search for across the hotel sheet." }
+                    },
+                    required: ["search_query"]
+                }
             }];
 
     if (senderId === 'KIOSK_DESK_1') {
-        funcDecls = funcDecls.filter(t => t.name !== 'manage_sheet_booking');
+        funcDecls = funcDecls.filter(t => t.name !== 'manage_sheet_booking' && t.name !== 'manage_hotel_booking');
     }
 
     const payload = {
@@ -775,6 +798,25 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                             }
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    } else if (call.name === 'manage_hotel_booking') {
+                        console.log(`[Google Sheets] Executing manage_hotel_booking: ${call.args.action} | Args: ${JSON.stringify(call.args)}`);
+                        let sheetStatus = "error";
+                        let sheetMessage = "HOTEL_SHEET_API_URL not configured in backend.";
+                        if (process.env.HOTEL_SHEET_API_URL) {
+                            try {
+                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, call.args);
+                                sheetStatus = "success";
+                                sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
+                                console.log(`[Google Sheets] Hotel Response: ${sheetMessage}`);
+                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH') {
+                                    await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM*\n🛎️ **Attention: Ketut**\n\nAction: ${call.args.action}\nDates: ${(call.args.target_dates||[]).join(', ')}\nGuest: ${call.args.guest_name || 'N/A'}\n\nStatus: ${sheetMessage}`);
+                                }
+                            } catch (err) {
+                                console.error("[Google Sheets API Error]", err.message);
+                                sheetMessage = err.message;
+                            }
+                        }
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
                     } else if (call.name === 'search_sheet_booking') {
                         console.log(`[Google Sheets] Executing search_sheet_booking | Args: ${JSON.stringify(call.args)}`);
                         let sheetStatus = "error";
@@ -784,6 +826,20 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
+                            } catch (err) {
+                                sheetMessage = err.message;
+                            }
+                        }
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    } else if (call.name === 'search_hotel_booking') {
+                        console.log(`[Google Sheets] Executing search_hotel_booking | Args: ${JSON.stringify(call.args)}`);
+                        let sheetStatus = "error";
+                        let sheetMessage = "HOTEL_SHEET_API_URL not configured in backend.";
+                        if (process.env.HOTEL_SHEET_API_URL) {
+                            try {
+                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
+                                sheetStatus = "success";
+                                sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
                             } catch (err) {
                                 sheetMessage = err.message;
                             }
