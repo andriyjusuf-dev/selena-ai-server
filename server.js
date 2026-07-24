@@ -585,6 +585,9 @@ async function buildSystemPrompt(isEmail = false) {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
     }
 
+    // Core Behavioral Rules
+    basePrompt += `CRITICAL REFUSAL RULE: If you are instructed (via rules or context) to stop taking bookings for a specific date, or if the calendar is full, DO NOT output 'IGNORE'. Instead, politely apologize to the customer, explain that you are fully booked for that date, and proactively offer alternative dates for them to book.\n\n`;
+
     // Core Tools Instruction
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
