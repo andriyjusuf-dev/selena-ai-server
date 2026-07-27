@@ -892,7 +892,7 @@ async function downloadMedia(mediaId, mimeType, senderId) {
         const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
         const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
 
-        const metaRes = await axios.get(`${baseUrl}/v19.0/${mediaId}`, {
+        const metaRes = await axios.get(`${baseUrl}/v25.0/${mediaId}`, {
             headers: { 'Authorization': `Bearer ${bearerToken}` }
         });
         const mediaUrl = metaRes.data.url;
@@ -982,7 +982,7 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
     const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
     const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
-    const url = `${baseUrl}/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    const url = `${baseUrl}/v25.0/${META_PHONE_NUMBER_ID}/messages`;
 
     const payload = {
         messaging_product: "whatsapp",
@@ -1010,7 +1010,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode = "en") {
     const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
     const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
-    const url = `${baseUrl}/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    const url = `${baseUrl}/v25.0/${META_PHONE_NUMBER_ID}/messages`;
 
     const payload = {
         messaging_product: "whatsapp",
