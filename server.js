@@ -887,18 +887,19 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
 // ==========================================
 // 5. META WHATSAPP API & MEDIA
 // ==========================================
-async function downloadMetaMedia(mediaId) {
+async function downloadMedia(mediaId, mimeType, senderId) {
     try {
-        // 1. Get media URL
-        const metaRes = await axios.get(`https://graph.facebook.com/v19.0/${mediaId}`, {
-            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+        const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
+        const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
+
+        const metaRes = await axios.get(`${baseUrl}/v19.0/${mediaId}`, {
+            headers: { 'Authorization': `Bearer ${bearerToken}` }
         });
         const mediaUrl = metaRes.data.url;
-        const mimeType = metaRes.data.mime_type;
-
+        
         // 2. Download binary data
         const downloadRes = await axios.get(mediaUrl, {
-            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+            headers: { 'Authorization': `Bearer ${bearerToken}` },
             responseType: 'arraybuffer'
         });
 
@@ -979,7 +980,9 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
 }
 
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
-    const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
+    const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
+    const url = `${baseUrl}/v19.0/${META_PHONE_NUMBER_ID}/messages`;
 
     const payload = {
         messaging_product: "whatsapp",
@@ -993,7 +996,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
         const cleanTo = recipientPhone.toString().replace(/\D/g, '');
         cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced to 5s to allow human takeover without breaking race condition
         const response = await axios.post(url, payload, {
-            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+            headers: { Authorization: `Bearer ${bearerToken}` }
         });
         if (response.data && response.data.messages && response.data.messages.length > 0) {
             cacheSet(response.data.messages[0].id, "true", 300);
@@ -1005,7 +1008,9 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 }
 
 async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode = "en") {
-    const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
+    const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
+    const url = `${baseUrl}/v19.0/${META_PHONE_NUMBER_ID}/messages`;
 
     const payload = {
         messaging_product: "whatsapp",
