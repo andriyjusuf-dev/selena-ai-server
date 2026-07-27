@@ -1042,10 +1042,17 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
 // 6. AUTOMATIC FOLLOW-UPS (Cron Job)
 // ==========================================
 async function evaluateFollowup(history, followUpType) {
-    const systemInstruction = `You are a sales assistant reviewing a customer conversation that has gone silent for ${followUpType} days. 
-Does this customer need a sales follow-up? 
-If the customer already rejected, booked, already completed their dive, or the conversation naturally concluded, reply ONLY with the exact word: NO
-If they were in the middle of inquiring and we should try to close the sale, reply ONLY with the exact word: YES`;
+    const systemInstruction = `CRITICAL TASK: You are a strict auditor reviewing a WhatsApp conversation that has been silent for ${followUpType} days. Your ONLY job is to prevent spamming customers who have already booked or finished talking to us.
+
+Analyze the history and answer ONE question: Should we send a sales follow-up to try and close a booking?
+
+RULES:
+1. If the customer ALREADY BOOKED, ALREADY PAID, or ALREADY AGREED to a date: Output exactly the word "NO"
+2. If the customer already said NO, cancelled, or rejected: Output exactly the word "NO"
+3. If the conversation naturally concluded, or they asked a random question and got their answer: Output exactly the word "NO"
+4. ONLY if they were actively inquiring about prices/dates, showed high interest in booking, but then ghosted before confirming: Output exactly the word "YES"
+
+Output NOTHING ELSE except "YES" or "NO". Default to "NO" if you are unsure.`;
 
     const payload = {
         system_instruction: { parts: [{ text: systemInstruction }] },
@@ -1059,7 +1066,7 @@ If they were in the middle of inquiring and we should try to close the sale, rep
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
             const answer = response.data.candidates[0].content.parts[0].text.trim().toUpperCase();
-            return answer.includes('YES');
+            return answer === 'YES';
         }
     } catch (error) {
         console.error("Gemini Followup Eval Error:", error.message);
