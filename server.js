@@ -531,14 +531,17 @@ async function appendHistory(senderId, role, text) {
 }
 
 async function checkIsPaused(senderId) {
-    const { data } = await supabase
+    const { data, error } = await supabase
         .from('pause_state')
         .select('paused_until')
         .eq('phone_number', senderId)
-        .single();
+        .order('paused_until', { ascending: false })
+        .limit(1);
 
-    if (data && data.paused_until) {
-        const pausedUntil = new Date(data.paused_until);
+    if (error) console.error("Pause Check Error:", error.message);
+
+    if (data && data.length > 0 && data[0].paused_until) {
+        const pausedUntil = new Date(data[0].paused_until);
         if (pausedUntil > new Date()) {
             return true;
         }
@@ -554,7 +557,7 @@ async function pauseAI(senderId, humanMessage) {
     await supabase.from('pause_state').upsert({
         phone_number: senderId,
         paused_until: pausedUntil.toISOString()
-    });
+    }, { onConflict: 'phone_number' });
 
     await appendHistory(senderId, "model", humanMessage);
     console.log(`[Auto-Pause] Paused AI for ${senderId}. Saved human context.`);
