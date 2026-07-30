@@ -593,8 +593,9 @@ async function buildSystemPrompt(isEmail = false) {
 
     // Core Tools Instruction
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
+    basePrompt += `CRITICAL TOOL RESTRICTION: You are STRICTLY FORBIDDEN from calling 'manage_sheet_booking', 'manage_hotel_booking', 'search_sheet_booking', or 'search_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If they ask about a booking but you are missing their name or dates, you MUST reply by asking them for those details BEFORE calling any tools!\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
-    basePrompt += `IMPORTANT: If you do not know the customer's name AND their booking date, ASK them for both first! Then, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., if name is "Eunjeen", search for "Eun") to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
+    basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., if name is "Eunjeen", search for "Eun") to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]. specreq: [req]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
