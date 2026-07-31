@@ -906,9 +906,13 @@ async function downloadMedia(mediaId, mimeType, senderId) {
         const mediaUrl = metaRes.data.url;
         const actualMimeType = metaRes.data.mime_type || mimeType || "application/octet-stream";
         
-        // 2. Download binary data
+        // 2. Download binary data from the URL
+        // If Dualhook proxies the CDN link, we must use the Dualhook key.
+        // If the URL points straight to Meta (lookaside.fbsbx.com), we must use the original Meta Token.
+        const downloadToken = mediaUrl.includes('dualhook.com') ? bearerToken : META_ACCESS_TOKEN;
+        
         const downloadRes = await axios.get(mediaUrl, {
-            headers: { 'Authorization': `Bearer ${bearerToken}` },
+            headers: { 'Authorization': `Bearer ${downloadToken}` },
             responseType: 'arraybuffer'
         });
 
