@@ -380,6 +380,7 @@ async function processWebhook(data) {
                     let isMedia = false;
                     let mediaType = null;
                     let mediaId = null;
+                    let mimeType = null;
 
                     if (messageObj.type === 'text') {
                         textBody = messageObj.text.body;
@@ -387,16 +388,19 @@ async function processWebhook(data) {
                         isMedia = true;
                         mediaType = 'image';
                         mediaId = messageObj.image.id;
+                        mimeType = messageObj.image.mime_type;
                         textBody = messageObj.image.caption || "";
                     } else if (messageObj.type === 'audio') {
                         isMedia = true;
                         mediaType = 'audio';
                         mediaId = messageObj.audio.id;
+                        mimeType = messageObj.audio.mime_type;
                         textBody = ""; // Voice notes have no caption
                     } else if (messageObj.type === 'document') {
                         isMedia = true;
                         mediaType = 'document';
                         mediaId = messageObj.document.id;
+                        mimeType = messageObj.document.mime_type;
                         textBody = messageObj.document.caption || messageObj.document.filename || "";
                     } else if (messageObj.type === 'system' || messageObj.type === 'unsupported') {
                         textBody = "[SYSTEM SIGNAL: Customer attempted to start a voice/video call or sent an unsupported attachment. You cannot accept voice calls. Politely greet them, mention you are the chat agent (Selena), and ask how you can help them over text instead.]";
@@ -471,7 +475,7 @@ async function processWebhook(data) {
                         let contextToSave = textBody;
                         if (isMedia) {
                             console.log(`[Media Received] Analyzing ${mediaType} from ${senderId}...`);
-                            const mediaData = await downloadMetaMedia(mediaId);
+                            const mediaData = await downloadMedia(mediaId, mimeType, senderId);
                             if (mediaData) {
                                 const description = await analyzeMedia(mediaData.buffer, mediaData.mimeType, textBody, mediaType);
                                 contextToSave = `[Customer sent a ${mediaType}: ${description}]`;
@@ -900,6 +904,7 @@ async function downloadMedia(mediaId, mimeType, senderId) {
             headers: { 'Authorization': `Bearer ${bearerToken}` }
         });
         const mediaUrl = metaRes.data.url;
+        const actualMimeType = metaRes.data.mime_type || mimeType || "application/octet-stream";
         
         // 2. Download binary data
         const downloadRes = await axios.get(mediaUrl, {
@@ -909,7 +914,7 @@ async function downloadMedia(mediaId, mimeType, senderId) {
 
         const buffer = Buffer.from(downloadRes.data, 'binary');
         const base64Data = buffer.toString('base64');
-        return { buffer, base64Data, mimeType };
+        return { buffer, base64Data, mimeType: actualMimeType };
     } catch (error) {
         console.error("Meta Media Download Error:", error.response ? error.response.data : error.message);
         return null;
