@@ -20,6 +20,8 @@ const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'gemini';
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -238,6 +240,17 @@ app.post('/telegram-webhook', async (req, res) => {
             if (isMentioned || isPrivate) {
                 const cleanText = text.replace('@SelenaSanctumBot', '').trim();
                 if (cleanText.length === 0) return;
+
+                if (cleanText.toLowerCase().startsWith('!switch_ai ')) {
+                    const newAi = cleanText.split(' ')[1].toLowerCase();
+                    if (newAi === 'gemini' || newAi === 'deepseek') {
+                        ACTIVE_AI = newAi;
+                        await sendTelegramAlert(`✅ 🧠 AI Brain switched to **${newAi.toUpperCase()}** successfully for WhatsApp traffic.`);
+                    } else {
+                        await sendTelegramAlert(`❌ Unknown AI provider. Use '!switch_ai gemini' or '!switch_ai deepseek'`);
+                    }
+                    return;
+                }
 
                 console.log(`[Telegram] Question from staff: ${cleanText}`);
 
@@ -488,7 +501,12 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                         } else {
                             await appendHistory(senderId, "user", contextToSave);
-                            const geminiReply = await callGemini(senderId);
+                            let geminiReply;
+                            if (ACTIVE_AI === 'deepseek') {
+                                geminiReply = await callDeepSeek(senderId);
+                            } else {
+                                geminiReply = await callGemini(senderId);
+                            }
                             if (geminiReply) {
                                 // Realistic typing delay: 2s base + 30ms per char (Max 12 seconds)
                                 const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
@@ -508,6 +526,20 @@ async function processWebhook(data) {
 // ==========================================
 // 3. DATABASE MEMORY LOGIC
 // ==========================================
+async function getDeepSeekHistory(senderId) {
+    const { data, error } = await supabase
+        .from('conversations')
+        .select('role, message_text')
+        .eq('phone_number', senderId)
+        .order('created_at', { ascending: false })
+        .limit(10);
+    if (error) return [];
+    return data.reverse().map(row => ({
+        role: row.role === 'model' ? 'assistant' : row.role,
+        content: row.message_text
+    }));
+}
+
 async function getHistory(senderId) {
     const { data, error } = await supabase
         .from('conversations')
@@ -657,6 +689,180 @@ async function handleBookingNotification(args, senderId) {
     }
     console.log(`[Booking] Alert sent to Admins.`);
 }
+
+async function callDeepSeek(senderId, userMessage = null, depth = 0) {
+    if (depth > 5) {
+        console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
+        return "IGNORE";
+    }
+
+    let history = await getDeepSeekHistory(senderId);
+    if (userMessage) {
+        history.push({ role: 'user', content: userMessage });
+    }
+    const systemPrompt = await buildSystemPrompt(false);
+    const messages = [{ role: 'system', content: systemPrompt }, ...history];
+
+    const deepseekTools = [
+        {
+            type: "function",
+            function: {
+                name: "record_booking",
+                description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" },
+                        pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" }
+                    }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "manage_sheet_booking",
+                description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        action: { type: "string" }, target_date: { type: "string" }, new_text: { type: "string" },
+                        old_date: { type: "string" }, old_text_match: { type: "string" }, search_query: { type: "string" }
+                    }, required: ["action"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "search_sheet_booking",
+                description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
+                parameters: {
+                    type: "object",
+                    properties: { search_query: { type: "string" } }, required: ["search_query"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "notify_admin",
+                description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
+                parameters: {
+                    type: "object",
+                    properties: { message: { type: "string" } }, required: ["message"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "manage_hotel_booking",
+                description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                        target_dates: { type: "array", items: { type: "string" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
+                        guest_name: { type: "string", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
+                        old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
+                        search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
+                    },
+                    required: ["action"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "search_hotel_booking",
+                description: "Search the live Hotel calendar for a customer's booking without modifying it.",
+                parameters: {
+                    type: "object",
+                    properties: { search_query: { type: "string" } }, required: ["search_query"]
+                }
+            }
+        }
+    ];
+
+    try {
+        const response = await axios.post('https://api.deepseek.com/chat/completions', {
+            model: 'deepseek-chat', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
+        }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+
+        if (response.data.choices && response.data.choices.length > 0) {
+            const message = response.data.choices[0].message;
+
+            if (message.tool_calls && message.tool_calls.length > 0) {
+                history.push(message); // push assistant's tool call
+
+                for (const toolCall of message.tool_calls) {
+                    const funcName = toolCall.function.name;
+                    const args = JSON.parse(toolCall.function.arguments || '{}');
+                    let resultStr = "";
+
+                    if (funcName === "record_booking") {
+                        await handleBookingNotification(args, senderId);
+                        resultStr = "Success";
+                    } else if (funcName === "notify_admin") {
+                        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n\n${args.message}`);
+                            resultStr = "Admin notified successfully.";
+                        } else {
+                            resultStr = "Admin chat not configured.";
+                        }
+                    } else if (funcName === "manage_sheet_booking" || funcName === "search_sheet_booking") {
+                        if (process.env.GOOGLE_SHEET_API_URL) {
+                            try {
+                                const payload = funcName === "search_sheet_booking" ? { action: 'SEARCH', search_query: args.search_query } : args;
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
+                                resultStr = sheetRes.data.status || "Completed";
+
+                                if (funcName === "manage_sheet_booking" && args.action !== 'SEARCH' && !resultStr.includes('Skipped')) {
+                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (DeepSeek)*\n\nAction: ${args.action}\nDate: ${args.target_date}\n\nStatus: ${resultStr}`);
+                                    }
+                                }
+                            } catch (e) { resultStr = e.message; }
+                        } else { resultStr = "GOOGLE_SHEET_API_URL not set."; }
+                    } else if (funcName === "manage_hotel_booking" || funcName === "search_hotel_booking") {
+                        if (process.env.HOTEL_SHEET_API_URL) {
+                            try {
+                                const payload = funcName === "search_hotel_booking" ? { action: 'SEARCH', search_query: args.search_query } : args;
+                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, payload);
+                                resultStr = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || sheetRes.data.status || "Completed");
+
+                                if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
+                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DeepSeek)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates||[]).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                    }
+                                }
+                            } catch (e) { resultStr = e.message; }
+                        } else { resultStr = "HOTEL_SHEET_API_URL not set."; }
+                    }
+
+                    history.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
+                }
+
+                const res2 = await axios.post('https://api.deepseek.com/chat/completions', {
+                    model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, ...history], tools: deepseekTools, temperature: 0.7
+                }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+
+                if (res2.data.choices && res2.data.choices.length > 0) {
+                    return res2.data.choices[0].message.content;
+                }
+            }
+
+            if (message.content) {
+                return message.content;
+            }
+        }
+    } catch (e) {
+        console.error("[DeepSeek Error]", e.response ? JSON.stringify(e.response.data) : e.message);
+    }
+    return null;
+}
+
 
 async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false, depth = 0) {
     if (depth > 3) {
