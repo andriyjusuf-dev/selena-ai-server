@@ -631,11 +631,11 @@ async function buildSystemPrompt(isEmail = false) {
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `CRITICAL TOOL RESTRICTION: You are STRICTLY FORBIDDEN from calling 'manage_sheet_booking', 'manage_hotel_booking', 'search_sheet_booking', or 'search_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If they ask about a booking but you are missing their name or dates, you MUST reply by asking them for those details BEFORE calling any tools!\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
-    basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., if name is "Eunjeen", search for "Eun") to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
+    basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., take the first 3 letters of whatever their name is) to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]. specreq: [req]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
-    basePrompt += `Ex: "Adrian TD DPO, Sabrina RESCC ?, specreq: none"\n`;
+    basePrompt += `Ex: "GuestName TD DPO, OtherName RESCC ?, specreq: none"\n`;
     basePrompt += `--- HOTEL BOOKINGS ('manage_hotel_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n\n`;
 
@@ -690,7 +690,7 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callDeepSeek(senderId, userMessage = null, depth = 0) {
+async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0) {
     if (depth > 5) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -700,6 +700,7 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
     if (userMessage) {
         history.push({ role: 'user', content: userMessage });
     }
+    history = history.concat(extraContext);
     const systemPrompt = await buildSystemPrompt(false);
     const messages = [{ role: 'system', content: systemPrompt }, ...history];
 
@@ -768,7 +769,7 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
                         old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
                         search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
                     },
-                    required: ["action"]
+                    required: ["action", "target_dates"]
                 }
             }
         },
@@ -794,7 +795,7 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
             const message = response.data.choices[0].message;
 
             if (message.tool_calls && message.tool_calls.length > 0) {
-                history.push(message); // push assistant's tool call
+                let newContext = [...extraContext, message];
 
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
@@ -841,16 +842,10 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
                         } else { resultStr = "HOTEL_SHEET_API_URL not set."; }
                     }
 
-                    history.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
+                    newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
                 }
 
-                const res2 = await axios.post('https://api.deepseek.com/chat/completions', {
-                    model: 'deepseek-v4-pro', messages: [{ role: 'system', content: systemPrompt }, ...history], tools: deepseekTools, temperature: 0.7
-                }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-
-                if (res2.data.choices && res2.data.choices.length > 0) {
-                    return res2.data.choices[0].message.content;
-                }
+                return await callDeepSeek(senderId, null, newContext, depth + 1);
             }
 
             if (message.content) {
@@ -900,7 +895,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                         target_date: { type: "STRING", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
                         new_text: { type: "STRING", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
                         old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
-                        old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'Adrian TD DPO')." },
+                        old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
                         search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
                     },
                     required: ["action"]
@@ -937,7 +932,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                         old_guest_match: { type: "STRING", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
                         search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
                     },
-                    required: ["action"]
+                    required: ["action", "target_dates"]
                 }
             }, {
                 name: "search_hotel_booking",
