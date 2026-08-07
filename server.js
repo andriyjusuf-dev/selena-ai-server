@@ -787,7 +787,7 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
 
     try {
         const response = await axios.post('https://api.deepseek.com/chat/completions', {
-            model: 'deepseek-chat', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
+            model: 'deepseek-v4-pro', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
         }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
         if (response.data.choices && response.data.choices.length > 0) {
@@ -845,7 +845,7 @@ async function callDeepSeek(senderId, userMessage = null, depth = 0) {
                 }
 
                 const res2 = await axios.post('https://api.deepseek.com/chat/completions', {
-                    model: 'deepseek-chat', messages: [{ role: 'system', content: systemPrompt }, ...history], tools: deepseekTools, temperature: 0.7
+                    model: 'deepseek-v4-pro', messages: [{ role: 'system', content: systemPrompt }, ...history], tools: deepseekTools, temperature: 0.7
                 }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
                 if (res2.data.choices && res2.data.choices.length > 0) {
