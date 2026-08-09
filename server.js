@@ -1494,4 +1494,24 @@ app.post('/gmail-webhook', async (req, res) => {
         if (aiReply) {
             if (aiReply.trim().toUpperCase() === "IGNORE") {
                 console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
-   
+                return res.json({ action: "IGNORED" });
+            }
+
+            // It's a real reply, tell Apps Script to create a draft
+            console.log(`[Gmail] Creating draft for ${senderEmail}`);
+            return res.json({ action: "DRAFT_CREATED", replyText: aiReply });
+        }
+
+        res.json({ action: "ERROR" });
+    } catch (error) {
+        console.error("Gmail Webhook Error:", error);
+        res.json({ action: "ERROR" });
+    }
+});
+
+// Run every day at 10:00 AM server time
+cron.schedule('0 10 * * *', runDailyFollowUps);
+
+app.listen(PORT, () => {
+    console.log(`Sanctum AI Server is running on port ${PORT}`);
+});
