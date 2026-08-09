@@ -758,19 +758,34 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0) {
+async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false) {
     if (depth > 5) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
     }
 
     let history = await getDeepSeekHistory(senderId);
+    let latestUserMessage = "Please respond to the ongoing conversation or tool results.";
+    
     if (userMessage) {
-        history.push({ role: 'user', content: userMessage });
+        latestUserMessage = userMessage;
+    } else if (history.length > 0) {
+        const lastMsg = history.pop();
+        latestUserMessage = lastMsg.content;
     }
-    history = history.concat(extraContext);
-    const systemPrompt = await buildSystemPrompt(false);
-    const messages = [{ role: 'system', content: systemPrompt }, ...history];
+
+    let systemPrompt = await buildSystemPrompt(isEmail);
+    
+    if (history.length > 0) {
+        const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n\n');
+        systemPrompt += `\n[PAST CONVERSATION CONTEXT]\n${historyText}\n\n[END PAST CONTEXT]\n`;
+    }
+
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: latestUserMessage },
+        ...extraContext
+    ];
 
     const deepseekTools = [
         {
@@ -913,7 +928,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                     newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
                 }
 
-                return await callDeepSeek(senderId, null, newContext, depth + 1);
+                return await callDeepSeek(senderId, null, newContext, depth + 1, isEmail);
             }
 
             if (message.content) {
@@ -1467,31 +1482,16 @@ app.post('/gmail-webhook', async (req, res) => {
             return res.json({ action: "PAUSED" });
         }
 
-        // 2. Append history and call Gemini
+        // 2. Append history and call AI
         await appendHistory(senderEmail, "user", contextToSave);
-        const aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true);
+        let aiReply;
+        if (ACTIVE_AI === 'deepseek') {
+            aiReply = await callDeepSeek(senderEmail, null, [], 0, true);
+        } else {
+            aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true);
+        }
 
         if (aiReply) {
             if (aiReply.trim().toUpperCase() === "IGNORE") {
                 console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
-                return res.json({ action: "IGNORED" });
-            }
-
-            // It's a real reply, tell Apps Script to create a draft
-            console.log(`[Gmail] Creating draft for ${senderEmail}`);
-            return res.json({ action: "DRAFT_CREATED", replyText: aiReply });
-        }
-
-        res.json({ action: "ERROR" });
-    } catch (error) {
-        console.error("Gmail Webhook Error:", error);
-        res.json({ action: "ERROR" });
-    }
-});
-
-// Run every day at 10:00 AM server time
-cron.schedule('0 10 * * *', runDailyFollowUps);
-
-app.listen(PORT, () => {
-    console.log(`Sanctum AI Server is running on port ${PORT}`);
-});
+   
