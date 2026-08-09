@@ -51,6 +51,116 @@ async function sendTelegramAlert(textMessage) {
     }
 }
 
+async function executeTelegramTool(funcName, args) {
+    if (funcName === 'check_recent_bookings') {
+        console.log(`[Telegram Tool] AI is running check_recent_bookings`);
+        const limit = args.limit || 10;
+        const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false }).limit(limit);
+        return { bookings: data || [] };
+    } else if (funcName === 'list_rules') {
+        console.log(`[Telegram Tool] AI is running list_rules`);
+        const { data, error } = await supabase.from('rules').select('rule_text').order('id', { ascending: true });
+        return { rules: data || [], error: error ? error.message : null };
+    } else if (funcName === 'add_rule') {
+        console.log(`[Telegram Tool] AI is running add_rule with text: ${args.rule_text}`);
+        const { error } = await supabase.from('rules').insert([{ rule_text: args.rule_text }]);
+        if (error) console.error("[Supabase Error] add_rule failed:", error.message);
+        return { status: error ? "failed" : "success", message: error ? error.message : "Rule added." };
+    } else if (funcName === 'delete_rule') {
+        console.log(`[Telegram Tool] AI is running delete_rule for match: ${args.rule_text_match}`);
+        const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${args.rule_text_match}%`);
+        if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
+        return { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." };
+    } else if (funcName === 'unpause_customer') {
+        console.log(`[Telegram Tool] AI is running unpause_customer for: ${args.phone_number}`);
+        const { error } = await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
+        if (error) console.error("[Supabase Error] unpause_customer failed:", error.message);
+        return { status: error ? "failed" : "success", message: error ? error.message : "Customer unpaused." };
+    } else if (funcName === 'message_customer') {
+        console.log(`[Telegram Tool] AI is running message_customer for: ${args.phone_number}`);
+        await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
+        const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }];
+        const botReply = await callGemini(args.phone_number, extraContext);
+        if (botReply) {
+            const delayMs = Math.min(2000 + (botReply.length * 30), 12000);
+            await sleep(delayMs);
+            await sendWhatsAppMessage(args.phone_number, botReply);
+            return { status: "success", generated_message: botReply };
+        } else {
+            return { status: "failed", message: "Failed to generate a reply." };
+        }
+    } else if (funcName === 'search_sheet_booking') {
+        console.log(`[Telegram Tool] AI is running search_sheet_booking for: ${args.search_query}`);
+        let sheetStatus = "error";
+        let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+        if (process.env.GOOGLE_SHEET_API_URL) {
+            try {
+                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: args.search_query });
+                sheetStatus = "success";
+                sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
+            } catch (err) {
+                sheetMessage = err.message;
+            }
+        }
+        return { status: sheetStatus, message: sheetMessage };
+    }
+    return { status: "error", message: "Unknown tool function." };
+}
+
+async function callDeepSeekTelegram(text) {
+    const systemPrompt = await buildSystemPrompt(false);
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
+
+    const deepseekTelegramTools = [
+        { type: "function", function: { name: "check_recent_bookings", description: "Look up recent bookings in the database.", parameters: { type: "object", properties: { limit: { type: "integer" } } } } },
+        { type: "function", function: { name: "list_rules", description: "Fetch all current rules from the master database.", parameters: { type: "object", properties: {} } } },
+        { type: "function", function: { name: "add_rule", description: "Add a new rule to the master database.", parameters: { type: "object", properties: { rule_text: { type: "string" } }, required: ["rule_text"] } } },
+        { type: "function", function: { name: "delete_rule", description: "Delete an existing rule.", parameters: { type: "object", properties: { rule_text_match: { type: "string" } }, required: ["rule_text_match"] } } },
+        { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
+        { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" } }, required: ["search_query"] } } }
+    ];
+
+    let messages = [
+        { role: 'system', content: telegramPrompt },
+        { role: 'user', content: text }
+    ];
+
+    try {
+        let response = await axios.post('https://api.deepseek.com/chat/completions', {
+            model: 'deepseek-v4-pro', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
+        }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+
+        if (response.data.choices && response.data.choices.length > 0) {
+            let message = response.data.choices[0].message;
+
+            while (message.tool_calls && message.tool_calls.length > 0) {
+                messages.push(message);
+                
+                for (const toolCall of message.tool_calls) {
+                    const funcName = toolCall.function.name;
+                    const args = JSON.parse(toolCall.function.arguments || '{}');
+                    const toolResult = await executeTelegramTool(funcName, args);
+                    messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResult) });
+                }
+
+                response = await axios.post('https://api.deepseek.com/chat/completions', {
+                    model: 'deepseek-v4-pro', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
+                }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+                
+                message = response.data.choices[0].message;
+            }
+
+            if (message.content) {
+                return message.content;
+            }
+        }
+    } catch (e) {
+        console.error("DeepSeek Telegram Error:", e.response ? JSON.stringify(e.response.data) : e.message);
+    }
+    return null;
+}
+
 async function callGeminiTelegram(text) {
     const systemPrompt = await buildSystemPrompt();
     const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
@@ -138,63 +248,8 @@ async function callGeminiTelegram(text) {
                 const call = part.functionCall;
                 let funcResCtx = null;
 
-                if (call.name === 'check_recent_bookings') {
-                    console.log(`[Telegram Tool] AI is running check_recent_bookings`);
-                    const limit = call.args.limit || 10;
-                    const { data, error } = await supabase.from('bookings').select('*').order('created_at', { ascending: false }).limit(limit);
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { bookings: data || [] } } }] };
-                } else if (call.name === 'list_rules') {
-                    console.log(`[Telegram Tool] AI is running list_rules`);
-                    const { data, error } = await supabase.from('rules').select('rule_text').order('id', { ascending: true });
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { rules: data || [], error: error ? error.message : null } } }] };
-                } else if (call.name === 'add_rule') {
-                    console.log(`[Telegram Tool] AI is running add_rule with text: ${call.args.rule_text}`);
-                    const { error } = await supabase.from('rules').insert([{ rule_text: call.args.rule_text }]);
-                    if (error) console.error("[Supabase Error] add_rule failed:", error.message);
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule added." } } }] };
-                } else if (call.name === 'delete_rule') {
-                    console.log(`[Telegram Tool] AI is running delete_rule for match: ${call.args.rule_text_match}`);
-                    const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${call.args.rule_text_match}%`);
-                    if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." } } }] };
-                } else if (call.name === 'unpause_customer') {
-                    console.log(`[Telegram Tool] AI is running unpause_customer for: ${call.args.phone_number}`);
-                    const { error } = await supabase.from('pause_state').delete().eq('phone_number', call.args.phone_number);
-                    if (error) console.error("[Supabase Error] unpause_customer failed:", error.message);
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: error ? "failed" : "success", message: error ? error.message : "Customer unpaused." } } }] };
-                } else if (call.name === 'message_customer') {
-                    console.log(`[Telegram Tool] AI is running message_customer for: ${call.args.phone_number}`);
-
-                    // Unpause them first
-                    await supabase.from('pause_state').delete().eq('phone_number', call.args.phone_number);
-
-                    // Call the WhatsApp Gemini instance with the custom instruction injected
-                    const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${call.args.instruction}]` }] }];
-                    const botReply = await callGemini(call.args.phone_number, extraContext);
-
-                    if (botReply) {
-                        const delayMs = Math.min(2000 + (botReply.length * 30), 12000);
-                        await sleep(delayMs);
-                        await sendWhatsAppMessage(call.args.phone_number, botReply);
-                        funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: "success", generated_message: botReply } } }] };
-                    } else {
-                        funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: "failed", message: "Failed to generate a reply." } } }] };
-                    }
-                } else if (call.name === 'search_sheet_booking') {
-                    console.log(`[Telegram Tool] AI is running search_sheet_booking for: ${call.args.search_query}`);
-                    let sheetStatus = "error";
-                    let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
-                    if (process.env.GOOGLE_SHEET_API_URL) {
-                        try {
-                            const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
-                            sheetStatus = "success";
-                            sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
-                        } catch (err) {
-                            sheetMessage = err.message;
-                        }
-                    }
-                    funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } }] };
-                }
+                const toolResult = await executeTelegramTool(call.name, call.args || {});
+                funcResCtx = { role: "function", parts: [{ functionResponse: { name: call.name, response: toolResult } }] };
 
                 if (funcResCtx) {
                     const secondPayload = {
@@ -252,6 +307,11 @@ app.post('/telegram-webhook', async (req, res) => {
                     return;
                 }
 
+                if (cleanText.toLowerCase() === '!status') {
+                    await sendTelegramAlert(`🤖 Current AI Engine running: ${ACTIVE_AI.toUpperCase()}`);
+                    return;
+                }
+
                 console.log(`[Telegram] Question from staff: ${cleanText}`);
 
                 try {
@@ -260,7 +320,13 @@ app.post('/telegram-webhook', async (req, res) => {
                         action: "typing"
                     });
 
-                    const reply = await callGeminiTelegram(cleanText);
+                    let reply = "";
+                    if (ACTIVE_AI === 'deepseek') {
+                        reply = await callDeepSeekTelegram(cleanText);
+                    } else {
+                        reply = await callGeminiTelegram(cleanText);
+                    }
+                    
                     if (reply) {
                         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                             chat_id: chatId,
@@ -623,6 +689,8 @@ async function buildSystemPrompt(isEmail = false) {
     } else {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
     }
+
+    basePrompt += `CRITICAL FORMATTING INSTRUCTION: You are participating in an ongoing chat. DO NOT output a transcript of the conversation. DO NOT repeat, summarize, or answer old questions from the history. ONLY provide your direct, natural reply to the very last user message.\n\n`;
 
     // Core Behavioral Rules
     basePrompt += `CRITICAL REFUSAL RULE: If you are instructed (via rules or context) to stop taking bookings for a specific date, or if the calendar is full, DO NOT output 'IGNORE'. Instead, politely apologize to the customer, explain that you are fully booked for that date, and proactively offer alternative dates for them to book.\n\n`;
