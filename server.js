@@ -810,8 +810,12 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 parameters: {
                     type: "object",
                     properties: {
-                        action: { type: "string" }, target_date: { type: "string" }, new_text: { type: "string" },
-                        old_date: { type: "string" }, old_text_match: { type: "string" }, search_query: { type: "string" }
+                        action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                        target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
+                        new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
+                        old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
+                        old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
+                        search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
                     }, required: ["action"]
                 }
             }
@@ -904,7 +908,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
                                 if (funcName === "manage_sheet_booking" && args.action !== 'SEARCH' && !resultStr.includes('Skipped')) {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (DeepSeek)*\n\nAction: ${args.action}\nDate: ${args.target_date}\n\nStatus: ${resultStr}`);
+                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (DS)*\n\nAction: ${args.action}\nDate: ${args.target_date}\nText: ${args.new_text || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
                                 }
                             } catch (e) { resultStr = e.message; }
@@ -918,7 +922,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
                                 if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DeepSeek)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates||[]).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DS)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates||[]).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
                                 }
                             } catch (e) { resultStr = e.message; }
