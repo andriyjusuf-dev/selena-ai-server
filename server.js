@@ -574,6 +574,7 @@ async function processWebhook(data) {
                                 geminiReply = await callGemini(senderId);
                             }
                             if (geminiReply) {
+                                if (geminiReply.match(/IGNORE/i)) return;
                                 // Realistic typing delay: 2s base + 30ms per char (Max 12 seconds)
                                 const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
                                 console.log(`[Typing Delay] Waiting ${delayMs / 1000} seconds...`);
@@ -685,7 +686,7 @@ async function buildSystemPrompt(isEmail = false) {
 
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
-        basePrompt += `If automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf spam: output ONLY: IGNORE.\n\n`;
+        basePrompt += `If automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf the email is obviously 100% malicious spam: output ONLY: IGNORE.\nNote: Do NOT output IGNORE for legitimate customer inquiries, even if they have weird formatting or marketing footers.\n\n`;
     } else {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
     }
@@ -693,6 +694,7 @@ async function buildSystemPrompt(isEmail = false) {
     basePrompt += `CRITICAL FORMATTING INSTRUCTION: You are participating in an ongoing chat. DO NOT output a transcript of the conversation. DO NOT repeat, summarize, or answer old questions from the history. ONLY provide your direct, natural reply to the very last user message.\n\n`;
 
     // Core Behavioral Rules
+    basePrompt += `CRITICAL LANGUAGE RULE: You MUST analyze the language of the user's most recent message and reply in the EXACT SAME language! If they speak Spanish, reply in Spanish. If Indonesian, reply in Indonesian.\n\n`;
     basePrompt += `CRITICAL REFUSAL RULE: If you are instructed (via rules or context) to stop taking bookings for a specific date, or if the calendar is full, DO NOT output 'IGNORE'. Instead, politely apologize to the customer, explain that you are fully booked for that date, and proactively offer alternative dates for them to book.\n\n`;
 
     // Core Tools Instruction
@@ -1496,7 +1498,7 @@ app.post('/gmail-webhook', async (req, res) => {
         }
 
         if (aiReply) {
-            if (aiReply.trim().toUpperCase() === "IGNORE") {
+            if (aiReply.match(/IGNORE/i)) {
                 console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
                 return res.json({ action: "IGNORED" });
             }
