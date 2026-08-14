@@ -875,10 +875,27 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         }
     ];
 
+    let retries = 3;
+    let response;
+
+    while (retries > 0) {
+        try {
+            response = await axios.post('https://api.deepseek.com/chat/completions', {
+                model: 'deepseek-v4-pro', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
+            }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+            break; // Success
+        } catch (e) {
+            console.error(`[DeepSeek API Error] Retries left: ${retries - 1}`, e.message);
+            retries--;
+            if (retries === 0) {
+                console.error("[DeepSeek Fatal Error]", e.response ? JSON.stringify(e.response.data) : e.message);
+                return null; // Give up after 3 tries
+            }
+            await new Promise(r => setTimeout(r, 2000)); // Wait 2 seconds before retry
+        }
+    }
+
     try {
-        const response = await axios.post('https://api.deepseek.com/chat/completions', {
-            model: 'deepseek-v4-pro', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
-        }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
         if (response.data.choices && response.data.choices.length > 0) {
             const message = response.data.choices[0].message;
@@ -942,7 +959,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
             }
         }
     } catch (e) {
-        console.error("[DeepSeek Error]", e.response ? JSON.stringify(e.response.data) : e.message);
+        console.error("[DeepSeek Processing Error]", e.message);
     }
     return null;
 }
