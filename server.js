@@ -80,7 +80,12 @@ async function executeTelegramTool(funcName, args) {
         console.log(`[Telegram Tool] AI is running message_customer for: ${args.phone_number}`);
         await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
         const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }];
-        const botReply = await callGemini(args.phone_number, extraContext);
+        let botReply;
+        if (ACTIVE_AI === 'deepseek') {
+            botReply = await callDeepSeek(args.phone_number);
+        } else {
+            botReply = await callGemini(args.phone_number, extraContext);
+        }
         if (botReply) {
             const delayMs = Math.min(2000 + (botReply.length * 30), 12000);
             await sleep(delayMs);
