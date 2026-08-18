@@ -658,17 +658,12 @@ async function checkIsPaused(senderId) {
 }
 
 async function pauseAI(senderId, humanMessage) {
-    // Pause for 10 minutes
-    const pausedUntil = new Date();
-    pausedUntil.setMinutes(pausedUntil.getMinutes() + 10);
-
-    await supabase.from('pause_state').upsert({
-        phone_number: senderId,
-        paused_until: pausedUntil.toISOString()
-    }, { onConflict: 'phone_number' });
-
+    // Note: Auto-pause feature was removed per user request.
+    // We no longer pause the AI when a human intervenes, but we STILL save the 
+    // human's message to the conversation history so Selena has context.
+    
     await appendHistory(senderId, "model", humanMessage);
-    console.log(`[Auto-Pause] Paused AI for ${senderId}. Saved human context.`);
+    console.log(`[Human Intervention] Saved human context for ${senderId} (AI not paused).`);
 }
 
 async function handleAdminCommand(adminId, commandText) {
