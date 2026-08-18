@@ -721,6 +721,7 @@ async function buildSystemPrompt(isEmail = false) {
     // Core Behavioral Rules
     basePrompt += `CRITICAL LANGUAGE RULE: You MUST analyze the language of the user's most recent message and reply in the EXACT SAME language! If they speak Spanish, reply in Spanish. If Indonesian, reply in Indonesian.\n\n`;
     basePrompt += `CRITICAL REFUSAL RULE: If you are instructed (via rules or context) to stop taking bookings for a specific date, or if the calendar is full, DO NOT output 'IGNORE'. Instead, politely apologize to the customer, explain that you are fully booked for that date, and proactively offer alternative dates for them to book.\n\n`;
+    basePrompt += `CRITICAL 'LAST WORD' RULE: You MUST always have the last word in a conversation. If the customer sends a simple statement, an 'okay', or a 'thank you', you MUST reply to politely acknowledge it (e.g., 'You're welcome!', 'Great, let me know if you need anything else!'). NEVER output 'IGNORE' just because they didn't ask a direct question.\n\n`;
 
     // Core Tools Instruction
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
