@@ -71,6 +71,18 @@ async function executeTelegramTool(funcName, args) {
         const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${args.rule_text_match}%`);
         if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
         return { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." };
+    } else if (funcName === 'pause_customer') {
+        console.log(`[Telegram Tool] AI is running pause_customer for: ${args.phone_number} duration: ${args.duration_minutes}m`);
+        const pausedUntil = new Date();
+        pausedUntil.setMinutes(pausedUntil.getMinutes() + (args.duration_minutes || 60));
+        
+        const { error } = await supabase.from('pause_state').upsert({
+            phone_number: args.phone_number,
+            paused_until: pausedUntil.toISOString()
+        }, { onConflict: 'phone_number' });
+        
+        if (error) console.error("[Supabase Error] pause_customer failed:", error.message);
+        return { status: error ? "failed" : "success", message: error ? error.message : `Customer paused for ${args.duration_minutes || 60} minutes.` };
     } else if (funcName === 'unpause_customer') {
         console.log(`[Telegram Tool] AI is running unpause_customer for: ${args.phone_number}`);
         const { error } = await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
@@ -79,11 +91,12 @@ async function executeTelegramTool(funcName, args) {
     } else if (funcName === 'message_customer') {
         console.log(`[Telegram Tool] AI is running message_customer for: ${args.phone_number}`);
         await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
-        const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }];
         let botReply;
         if (ACTIVE_AI === 'deepseek') {
-            botReply = await callDeepSeek(args.phone_number);
+            const deepseekContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
+            botReply = await callDeepSeek(args.phone_number, null, deepseekContext);
         } else {
+            const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }];
             botReply = await callGemini(args.phone_number, extraContext);
         }
         if (botReply) {
@@ -114,13 +127,14 @@ async function executeTelegramTool(funcName, args) {
 
 async function callDeepSeekTelegram(text) {
     const systemPrompt = await buildSystemPrompt(false);
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
 
     const deepseekTelegramTools = [
         { type: "function", function: { name: "check_recent_bookings", description: "Look up recent bookings in the database.", parameters: { type: "object", properties: { limit: { type: "integer" } } } } },
         { type: "function", function: { name: "list_rules", description: "Fetch all current rules from the master database.", parameters: { type: "object", properties: {} } } },
         { type: "function", function: { name: "add_rule", description: "Add a new rule to the master database.", parameters: { type: "object", properties: { rule_text: { type: "string" } }, required: ["rule_text"] } } },
         { type: "function", function: { name: "delete_rule", description: "Delete an existing rule.", parameters: { type: "object", properties: { rule_text_match: { type: "string" } }, required: ["rule_text_match"] } } },
+        { type: "function", function: { name: "pause_customer", description: "Pause the AI for a specific customer for a given number of minutes.", parameters: { type: "object", properties: { phone_number: { type: "string" }, duration_minutes: { type: "integer" } }, required: ["phone_number", "duration_minutes"] } } },
         { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" } }, required: ["search_query"] } } }
@@ -168,7 +182,7 @@ async function callDeepSeekTelegram(text) {
 
 async function callGeminiTelegram(text) {
     const systemPrompt = await buildSystemPrompt();
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
 
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
@@ -205,6 +219,17 @@ async function callGeminiTelegram(text) {
                         rule_text_match: { type: "STRING", description: "A few words from the rule you want to delete. We will delete any rule containing these words." }
                     },
                     required: ["rule_text_match"]
+                }
+            }, {
+                name: "pause_customer",
+                description: "Pause the AI for a specific customer for a given number of minutes.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        phone_number: { type: "STRING", description: "The customer's phone number without the '+' sign (e.g., 628123456789)" },
+                        duration_minutes: { type: "INTEGER", description: "The number of minutes to pause the AI for (e.g., 60, 1440)." }
+                    },
+                    required: ["phone_number", "duration_minutes"]
                 }
             }, {
                 name: "unpause_customer",
