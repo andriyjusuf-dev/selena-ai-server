@@ -571,9 +571,9 @@ async function processWebhook(data) {
                                 hour12: false
                             });
                             const currentHour = parseInt(baliFormatter.format(now));
-                            // Allow between 19 (7 PM) and 7 (7:59 AM)
-                            // Which means ignore if >= 8 and < 19
-                            if (currentHour >= 8 && currentHour < 19) {
+                            // Allow between 18 (6 PM) and 8 (8:59 AM)
+                            // Which means ignore if >= 9 and < 18
+                            if (currentHour >= 9 && currentHour < 18) {
                                 console.log(`[System] Night Mode Active (Bali time). Current hour is ${currentHour}. Ignoring message from ${senderId}.`);
                                 return;
                             }
