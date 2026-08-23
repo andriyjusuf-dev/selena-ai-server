@@ -600,6 +600,10 @@ async function processWebhook(data) {
                             let geminiReply;
                             if (ACTIVE_AI === 'deepseek') {
                                 geminiReply = await callDeepSeek(senderId);
+                                if (!geminiReply) {
+                                    console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
+                                    geminiReply = await callGemini(senderId);
+                                }
                             } else {
                                 geminiReply = await callGemini(senderId);
                             }
