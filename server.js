@@ -15,7 +15,9 @@ const PORT = process.env.PORT || 3000;
 
 // Configuration
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
+const META_IG_VERIFY_TOKEN = process.env.META_IG_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const META_IG_ACCESS_TOKEN = process.env.META_IG_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_IG_USER_ID = process.env.META_IG_USER_ID; // Added for Instagram
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
@@ -383,7 +385,7 @@ app.get('/whatsapp-webhook', (req, res) => {
 });
 
 app.get('/instagram-webhook', (req, res) => {
-    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === META_VERIFY_TOKEN) {
+    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === META_IG_VERIFY_TOKEN) {
         return res.status(200).send(req.query['hub.challenge']);
     }
     return res.status(403).send("Forbidden");
@@ -1561,7 +1563,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 }
 
 async function sendInstagramDM(recipientId, textMessage) {
-    const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${META_ACCESS_TOKEN}`;
+    const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${META_IG_ACCESS_TOKEN}`;
     const payload = {
         recipient: { id: recipientId },
         message: { text: textMessage }
@@ -1576,7 +1578,7 @@ async function sendInstagramDM(recipientId, textMessage) {
 }
 
 async function replyToInstagramComment(commentId, textMessage) {
-    const url = `https://graph.facebook.com/v21.0/${commentId}/replies?access_token=${META_ACCESS_TOKEN}`;
+    const url = `https://graph.facebook.com/v21.0/${commentId}/replies?access_token=${META_IG_ACCESS_TOKEN}`;
     const payload = { message: textMessage };
     try {
         await axios.post(url, payload);
