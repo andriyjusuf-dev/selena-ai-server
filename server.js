@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 3000;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
+const META_IG_USER_ID = process.env.META_IG_USER_ID; // Added for Instagram
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -381,6 +382,13 @@ app.get('/whatsapp-webhook', (req, res) => {
     return res.status(403).send("Forbidden");
 });
 
+app.get('/instagram-webhook', (req, res) => {
+    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === META_VERIFY_TOKEN) {
+        return res.status(200).send(req.query['hub.challenge']);
+    }
+    return res.status(403).send("Forbidden");
+});
+
 // ==========================================
 // 1.5 KIOSK API (Web Interface)
 // ==========================================
@@ -437,6 +445,11 @@ app.post('/whatsapp-webhook', (req, res) => {
 
     // Process async
     processWebhook(req.body).catch(console.error);
+});
+
+app.post('/instagram-webhook', (req, res) => {
+    res.status(200).send({ status: "success" });
+    processInstagramWebhook(req.body).catch(console.error);
 });
 
 async function processWebhook(data) {
@@ -599,13 +612,13 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                             let geminiReply;
                             if (ACTIVE_AI === 'deepseek') {
-                                geminiReply = await callDeepSeek(senderId);
+                                geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
                                 if (!geminiReply) {
                                     console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
-                                    geminiReply = await callGemini(senderId);
+                                    geminiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'whatsapp');
                                 }
                             } else {
-                                geminiReply = await callGemini(senderId);
+                                geminiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'whatsapp');
                             }
                             if (geminiReply) {
                                 if (geminiReply.match(/IGNORE/i)) return;
@@ -622,6 +635,170 @@ async function processWebhook(data) {
             }
         }
     }
+}
+
+async function processInstagramWebhook(data) {
+    if (data.object !== 'instagram') return;
+    const entry = data.entry[0];
+    
+    if (entry.messaging) {
+        for (let i = 0; i < entry.messaging.length; i++) {
+            await handleInstagramMessagingEvent(entry.messaging[i]);
+        }
+    }
+    
+    if (entry.changes) {
+        for (let i = 0; i < entry.changes.length; i++) {
+            const change = entry.changes[i];
+            if (change.field === 'comments') {
+                await handleInstagramCommentEvent(change.value);
+            }
+        }
+    }
+}
+
+async function handleInstagramMessagingEvent(messagingEvent) {
+    const senderId = messagingEvent.sender.id;
+    const recipientId = messagingEvent.recipient.id;
+    
+    if (messagingEvent.message) {
+        const messageObj = messagingEvent.message;
+        
+        // 1. Check for Human Takeover (Echo)
+        if (messageObj.is_echo) {
+            const aiSent = cacheGet(`ai_sent_${recipientId}`);
+            if (!aiSent) {
+                const contextToSave = messageObj.text || "[Human sent media/attachment]";
+                await pauseAI(recipientId, contextToSave);
+            }
+            return;
+        }
+
+        // 2. Customer or Admin is typing
+        const textBody = messageObj.text || "";
+        
+        if (ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
+            await handleAdminCommand(senderId, textBody);
+            return;
+        }
+
+        const isPaused = await checkIsPaused(senderId);
+        let contextToSave = textBody;
+
+        // Check for Story Mention or Share
+        let isStoryAction = false;
+        if (messageObj.story && messageObj.story.mention) isStoryAction = true;
+        if (messageObj.reply_to && messageObj.reply_to.story && !textBody.trim()) isStoryAction = true;
+        if (messageObj.attachments && messageObj.attachments.length > 0) {
+            const att = messageObj.attachments[0];
+            if (att.type === 'share' || att.type === 'story_mention' || att.type === 'ig_reel') {
+                if (!textBody.trim()) isStoryAction = true;
+            }
+        }
+
+        if (isStoryAction) {
+            contextToSave = "[User mentioned or shared our story/post] " + textBody;
+            if (!isPaused) {
+                console.log(`[Story Action] from ${senderId}`);
+                await appendHistory(senderId, "user", contextToSave);
+                
+                let aiReply;
+                if (ACTIVE_AI === 'deepseek') {
+                    const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
+                    aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                } else {
+                    const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
+                    aiReply = await callGemini(senderId, geminiCtx, "gemini-2.5-pro", false, 0, 'instagram');
+                }
+                
+                if (aiReply) {
+                    await sleep(3000);
+                    await sendInstagramDM(senderId, aiReply);
+                }
+                return;
+            }
+        }
+        
+        // Check for Attachments (Images, etc.)
+        if (messageObj.attachments && messageObj.attachments.length > 0) {
+            const attachment = messageObj.attachments[0];
+            if (attachment.type === 'image') {
+                const imageUrl = attachment.payload.url;
+                const mediaData = await downloadIGMedia(imageUrl);
+                if (mediaData) {
+                    const description = await analyzeMedia(mediaData.buffer, mediaData.mimeType, textBody, "image");
+                    contextToSave = `[Customer sent an image: ${description}]`;
+                } else {
+                    contextToSave = `[Customer sent an image, but it could not be downloaded] ${textBody}`;
+                }
+            } else {
+                contextToSave = `[Customer sent an attachment of type: ${attachment.type}] ${textBody}`;
+            }
+        }
+
+        if (isPaused) {
+            await appendHistory(senderId, "user", contextToSave);
+        } else {
+            await appendHistory(senderId, "user", contextToSave);
+            let aiReply;
+            if (ACTIVE_AI === 'deepseek') {
+                aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
+                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'instagram');
+            } else {
+                aiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'instagram');
+            }
+            if (aiReply) {
+                if (aiReply.match(/IGNORE/i)) return;
+                const delayMs = Math.min(2000 + (aiReply.length * 30), 12000);
+                await sleep(delayMs);
+                await sendInstagramDM(senderId, aiReply);
+            }
+        }
+    }
+}
+
+async function handleInstagramCommentEvent(commentValue) {
+    const commentId = commentValue.id;
+    const fromId = commentValue.from.id;
+    const text = commentValue.text;
+
+    if (fromId === META_IG_USER_ID) return;
+    if (commentValue.hidden || commentValue.deleted) return;
+
+    console.log(`[New Comment] from ${fromId}: ${text}`);
+    const aiReply = await generateCommentReply(text);
+    if (aiReply) {
+        await sleep(4000);
+        await replyToInstagramComment(commentId, aiReply);
+    }
+}
+
+async function generateCommentReply(commentText) {
+    const systemPrompt = `You are the friendly owner of an Instagram page. A user just commented on your post. Generate a short, positive, and appreciative reply to their comment. Keep it under 2 sentences, use nice emojis. If their comment is negative or toxic, reply with a calm, polite message or a simple acknowledgment.`;
+    
+    if (ACTIVE_AI === 'deepseek') {
+        try {
+            const response = await axios.post('https://api.deepseek.com/chat/completions', {
+                model: 'deepseek-v4-pro',
+                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
+            }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
+            
+            if (response.data.choices && response.data.choices.length > 0) {
+                return response.data.choices[0].message.content;
+            }
+        } catch (error) { console.error("DeepSeek Comment Reply Error:", error.message); }
+    } else {
+        try {
+            const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+                system_instruction: { parts: [{ text: systemPrompt }] },
+                contents: [{ role: "user", parts: [{ text: `User's Comment: "${commentText}"` }] }]
+            });
+            if (response.data.candidates && response.data.candidates.length > 0) {
+                return response.data.candidates[0].content.parts[0].text;
+            }
+        } catch (error) { console.error("Gemini Comment Reply Error:", error.message); }
+    }
+    return null;
 }
 
 // ==========================================
@@ -709,7 +886,7 @@ async function handleAdminCommand(adminId, commandText) {
     console.log(`[Admin Command] Added rule: ${rule}`);
 }
 
-async function buildSystemPrompt(isEmail = false) {
+async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     const { data, error } = await supabase
         .from('rules')
         .select('rule_text')
@@ -717,6 +894,12 @@ async function buildSystemPrompt(isEmail = false) {
 
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. `;
+
+    if (platform === 'instagram') {
+        basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on Instagram Direct Messages.] \n\n`;
+    } else if (platform === 'whatsapp') {
+        basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on WhatsApp.] \n\n`;
+    }
 
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
@@ -795,7 +978,7 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false) {
+async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp') {
     if (depth > 5) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -811,7 +994,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         latestUserMessage = lastMsg.content;
     }
 
-    let systemPrompt = await buildSystemPrompt(isEmail);
+    let systemPrompt = await buildSystemPrompt(isEmail, platform);
     
     if (history.length > 0) {
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n\n');
@@ -986,7 +1169,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                     newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
                 }
 
-                return await callDeepSeek(senderId, null, newContext, depth + 1, isEmail);
+                return await callDeepSeek(senderId, null, newContext, depth + 1, isEmail, platform);
             }
 
             if (message.content) {
@@ -1000,7 +1183,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 }
 
 
-async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false, depth = 0) {
+async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false, depth = 0, platform = 'whatsapp') {
     if (depth > 3) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -1009,7 +1192,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
     }
-    const systemPrompt = await buildSystemPrompt(isEmail);
+    const systemPrompt = await buildSystemPrompt(isEmail, platform);
 
     let funcDecls = [{
         name: "record_booking",
@@ -1208,7 +1391,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                 }
 
                 const funcResCtx = { role: "function", parts: funcResParts };
-                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1);
+                const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1, platform);
 
                 if (firstTurnText && !recursiveReply) {
                     await appendHistory(senderId, "model", firstTurnText);
@@ -1235,7 +1418,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
 }
 
 // ==========================================
-// 5. META WHATSAPP API & MEDIA
+// 5. META WHATSAPP & INSTAGRAM API & MEDIA
 // ==========================================
 async function downloadMedia(mediaId, mimeType, senderId) {
     try {
@@ -1263,6 +1446,21 @@ async function downloadMedia(mediaId, mimeType, senderId) {
         return { buffer, base64Data, mimeType: actualMimeType };
     } catch (error) {
         console.error("Meta Media Download Error:", error.response ? error.response.data : error.message);
+        return null;
+    }
+}
+
+async function downloadIGMedia(mediaUrl) {
+    try {
+        const downloadRes = await axios.get(mediaUrl, {
+            responseType: 'arraybuffer'
+        });
+        const buffer = Buffer.from(downloadRes.data, 'binary');
+        const base64Data = buffer.toString('base64');
+        const mimeType = downloadRes.headers['content-type'] || "image/jpeg";
+        return { buffer, base64Data, mimeType };
+    } catch (error) {
+        console.error("IG Media Download Error:", error.response ? error.response.data : error.message);
         return null;
     }
 }
@@ -1359,6 +1557,32 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
         console.log(`[Sent] Message to ${recipientPhone}`);
     } catch (error) {
         console.error("WhatsApp Send Error:", error.response ? error.response.data : error.message);
+    }
+}
+
+async function sendInstagramDM(recipientId, textMessage) {
+    const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${META_ACCESS_TOKEN}`;
+    const payload = {
+        recipient: { id: recipientId },
+        message: { text: textMessage }
+    };
+    try {
+        cacheSet(`ai_sent_${recipientId}`, "true", 5); 
+        await axios.post(url, payload);
+        console.log(`[Sent] Instagram DM to ${recipientId}`);
+    } catch (error) {
+        console.error("Instagram Send Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    }
+}
+
+async function replyToInstagramComment(commentId, textMessage) {
+    const url = `https://graph.facebook.com/v21.0/${commentId}/replies?access_token=${META_ACCESS_TOKEN}`;
+    const payload = { message: textMessage };
+    try {
+        await axios.post(url, payload);
+        console.log(`[Sent] Reply to Comment ${commentId}`);
+    } catch (error) {
+        console.error("Instagram Comment Reply Error:", error.response ? JSON.stringify(error.response.data) : error.message);
     }
 }
 
@@ -1544,9 +1768,9 @@ app.post('/gmail-webhook', async (req, res) => {
         await appendHistory(senderEmail, "user", contextToSave);
         let aiReply;
         if (ACTIVE_AI === 'deepseek') {
-            aiReply = await callDeepSeek(senderEmail, null, [], 0, true);
+            aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
         } else {
-            aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true);
+            aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true, 0, 'gmail');
         }
 
         if (aiReply) {
