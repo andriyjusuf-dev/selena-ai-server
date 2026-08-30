@@ -1794,7 +1794,7 @@ app.post('/gmail-webhook', async (req, res) => {
 });
 
 // Run every day at 10:00 AM server time
-cron.schedule('0 10 * * *', runDailyFollowUps);
+// cron.schedule('0 10 * * *', runDailyFollowUps);
 
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
