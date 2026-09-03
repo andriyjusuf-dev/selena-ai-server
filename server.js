@@ -78,12 +78,12 @@ async function executeTelegramTool(funcName, args) {
         console.log(`[Telegram Tool] AI is running pause_customer for: ${args.phone_number} duration: ${args.duration_minutes}m`);
         const pausedUntil = new Date();
         pausedUntil.setMinutes(pausedUntil.getMinutes() + (args.duration_minutes || 60));
-        
+
         const { error } = await supabase.from('pause_state').upsert({
             phone_number: args.phone_number,
             paused_until: pausedUntil.toISOString()
         }, { onConflict: 'phone_number' });
-        
+
         if (error) console.error("[Supabase Error] pause_customer failed:", error.message);
         return { status: error ? "failed" : "success", message: error ? error.message : `Customer paused for ${args.duration_minutes || 60} minutes.` };
     } else if (funcName === 'unpause_customer') {
@@ -158,7 +158,7 @@ async function callDeepSeekTelegram(text) {
 
             while (message.tool_calls && message.tool_calls.length > 0) {
                 messages.push(message);
-                
+
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
                     const args = JSON.parse(toolCall.function.arguments || '{}');
@@ -169,7 +169,7 @@ async function callDeepSeekTelegram(text) {
                 response = await axios.post('https://api.deepseek.com/chat/completions', {
                     model: 'deepseek-v4-pro', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
                 }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-                
+
                 message = response.data.choices[0].message;
             }
 
@@ -359,7 +359,7 @@ app.post('/telegram-webhook', async (req, res) => {
                     } else {
                         reply = await callGeminiTelegram(cleanText);
                     }
-                    
+
                     if (reply) {
                         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                             chat_id: chatId,
@@ -642,13 +642,13 @@ async function processWebhook(data) {
 async function processInstagramWebhook(data) {
     if (data.object !== 'instagram') return;
     const entry = data.entry[0];
-    
+
     if (entry.messaging) {
         for (let i = 0; i < entry.messaging.length; i++) {
             await handleInstagramMessagingEvent(entry.messaging[i]);
         }
     }
-    
+
     if (entry.changes) {
         for (let i = 0; i < entry.changes.length; i++) {
             const change = entry.changes[i];
@@ -662,10 +662,10 @@ async function processInstagramWebhook(data) {
 async function handleInstagramMessagingEvent(messagingEvent) {
     const senderId = messagingEvent.sender.id;
     const recipientId = messagingEvent.recipient.id;
-    
+
     if (messagingEvent.message) {
         const messageObj = messagingEvent.message;
-        
+
         // 1. Check for Human Takeover (Echo)
         if (messageObj.is_echo) {
             const aiSent = cacheGet(`ai_sent_${recipientId}`);
@@ -678,7 +678,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
 
         // 2. Customer or Admin is typing
         const textBody = messageObj.text || "";
-        
+
         if (ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
             await handleAdminCommand(senderId, textBody);
             return;
@@ -703,7 +703,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             if (!isPaused) {
                 console.log(`[Story Action] from ${senderId}`);
                 await appendHistory(senderId, "user", contextToSave);
-                
+
                 let aiReply;
                 if (ACTIVE_AI === 'deepseek') {
                     const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
@@ -712,7 +712,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
                     const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
                     aiReply = await callGemini(senderId, geminiCtx, "gemini-2.5-pro", false, 0, 'instagram');
                 }
-                
+
                 if (aiReply) {
                     await sleep(3000);
                     await sendInstagramDM(senderId, aiReply);
@@ -720,7 +720,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
                 return;
             }
         }
-        
+
         // Check for Attachments (Images, etc.)
         if (messageObj.attachments && messageObj.attachments.length > 0) {
             const attachment = messageObj.attachments[0];
@@ -777,14 +777,14 @@ async function handleInstagramCommentEvent(commentValue) {
 
 async function generateCommentReply(commentText) {
     const systemPrompt = `You are the friendly owner of an Instagram page. A user just commented on your post. Generate a short, positive, and appreciative reply to their comment. Keep it under 2 sentences, use nice emojis. If their comment is negative or toxic, reply with a calm, polite message or a simple acknowledgment.`;
-    
+
     if (ACTIVE_AI === 'deepseek') {
         try {
             const response = await axios.post('https://api.deepseek.com/chat/completions', {
                 model: 'deepseek-v4-pro',
                 messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
             }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-            
+
             if (response.data.choices && response.data.choices.length > 0) {
                 return response.data.choices[0].message.content;
             }
@@ -988,7 +988,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
     let history = await getDeepSeekHistory(senderId);
     let latestUserMessage = "Please respond to the ongoing conversation or tool results.";
-    
+
     if (userMessage) {
         latestUserMessage = userMessage;
     } else if (history.length > 0) {
@@ -997,7 +997,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
     }
 
     let systemPrompt = await buildSystemPrompt(isEmail, platform);
-    
+
     if (history.length > 0) {
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n\n');
         systemPrompt += `\n[PAST CONVERSATION CONTEXT]\n${historyText}\n\n[END PAST CONTEXT]\n`;
@@ -1161,7 +1161,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
                                 if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DS)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates||[]).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DS)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
                                 }
                             } catch (e) { resultStr = e.message; }
@@ -1198,79 +1198,79 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
 
     let funcDecls = [{
         name: "record_booking",
-                description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        status: { type: "STRING", description: "Either '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED (No Deposit)'" },
-                        customer_name: { type: "STRING", description: "Name of the customer" },
-                        dive_date: { type: "STRING", description: "Date of the dive" },
-                        pax: { type: "INTEGER", description: "Number of people" },
-                        dive_type: { type: "STRING", description: "What course or trip they are booking" },
-                        special_requests: { type: "STRING", description: "Any special requests, dietary restrictions (e.g., vegan), or notes (e.g., diving with partner, wants to dive deep). Put 'None' if not applicable." }
-                    },
-                    required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
-                }
-            }, {
-                name: "manage_sheet_booking",
-                description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
-                        target_date: { type: "STRING", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
-                        new_text: { type: "STRING", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
-                        old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
-                        old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
-                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
-                    },
-                    required: ["action"]
-                }
-            }, {
-                name: "notify_admin",
-                description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        message: { type: "STRING", description: "The message to send to the admins." }
-                    },
-                    required: ["message"]
-                }
-            }, {
-                name: "search_sheet_booking",
-                description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." }
-                    },
-                    required: ["search_query"]
-                }
-            }, {
-                name: "manage_hotel_booking",
-                description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
-                        target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
-                        guest_name: { type: "STRING", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
-                        old_guest_match: { type: "STRING", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
-                        search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
-                    },
-                    required: ["action", "target_dates"]
-                }
-            }, {
-                name: "search_hotel_booking",
-                description: "Search the live Hotel calendar for a customer's booking without modifying it.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        search_query: { type: "STRING", description: "Guest name or string to search for across the hotel sheet." }
-                    },
-                    required: ["search_query"]
-                }
-            }];
+        description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                status: { type: "STRING", description: "Either '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED (No Deposit)'" },
+                customer_name: { type: "STRING", description: "Name of the customer" },
+                dive_date: { type: "STRING", description: "Date of the dive" },
+                pax: { type: "INTEGER", description: "Number of people" },
+                dive_type: { type: "STRING", description: "What course or trip they are booking" },
+                special_requests: { type: "STRING", description: "Any special requests, dietary restrictions (e.g., vegan), or notes (e.g., diving with partner, wants to dive deep). Put 'None' if not applicable." }
+            },
+            required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
+        }
+    }, {
+        name: "manage_sheet_booking",
+        description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                target_date: { type: "STRING", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
+                new_text: { type: "STRING", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
+                old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
+                old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
+                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
+            },
+            required: ["action"]
+        }
+    }, {
+        name: "notify_admin",
+        description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                message: { type: "STRING", description: "The message to send to the admins." }
+            },
+            required: ["message"]
+        }
+    }, {
+        name: "search_sheet_booking",
+        description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." }
+            },
+            required: ["search_query"]
+        }
+    }, {
+        name: "manage_hotel_booking",
+        description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
+                target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
+                guest_name: { type: "STRING", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
+                old_guest_match: { type: "STRING", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
+                search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
+            },
+            required: ["action", "target_dates"]
+        }
+    }, {
+        name: "search_hotel_booking",
+        description: "Search the live Hotel calendar for a customer's booking without modifying it.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                search_query: { type: "STRING", description: "Guest name or string to search for across the hotel sheet." }
+            },
+            required: ["search_query"]
+        }
+    }];
 
     if (senderId === 'KIOSK_DESK_1') {
         funcDecls = funcDecls.filter(t => t.name !== 'manage_sheet_booking' && t.name !== 'manage_hotel_booking');
@@ -1347,7 +1347,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro",
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
                                 console.log(`[Google Sheets] Hotel Response: ${sheetMessage}`);
                                 if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH') {
-                                    await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM*\n🛎️ **Attention: Ketut**\n\nAction: ${call.args.action}\nDates: ${(call.args.target_dates||[]).join(', ')}\nGuest: ${call.args.guest_name || 'N/A'}\n\nStatus: ${sheetMessage}`);
+                                    await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM*\n🛎️ **Attention: Ketut**\n\nAction: ${call.args.action}\nDates: ${(call.args.target_dates || []).join(', ')}\nGuest: ${call.args.guest_name || 'N/A'}\n\nStatus: ${sheetMessage}`);
                                 }
                             } catch (err) {
                                 console.error("[Google Sheets API Error]", err.message);
@@ -1432,12 +1432,12 @@ async function downloadMedia(mediaId, mimeType, senderId) {
         });
         const mediaUrl = metaRes.data.url;
         const actualMimeType = metaRes.data.mime_type || mimeType || "application/octet-stream";
-        
+
         // 2. Download binary data from the URL
         // If Dualhook proxies the CDN link, we must use the Dualhook key.
         // If the URL points straight to Meta (lookaside.fbsbx.com), we must use the original Meta Token.
         const downloadToken = mediaUrl.includes('dualhook.com') ? bearerToken : META_ACCESS_TOKEN;
-        
+
         const downloadRes = await axios.get(mediaUrl, {
             headers: { 'Authorization': `Bearer ${downloadToken}` },
             responseType: 'arraybuffer'
@@ -1569,7 +1569,7 @@ async function sendInstagramDM(recipientId, textMessage) {
         message: { text: textMessage }
     };
     try {
-        cacheSet(`ai_sent_${recipientId}`, "true", 5); 
+        cacheSet(`ai_sent_${recipientId}`, "true", 5);
         await axios.post(url, payload);
         console.log(`[Sent] Instagram DM to ${recipientId}`);
     } catch (error) {
@@ -1733,7 +1733,7 @@ app.post('/gmail-webhook', async (req, res) => {
 
         // HARD-CODED SPAM & SYSTEM FILTER (Bypasses AI completely)
         if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) &&
-            !senderEmailLower.includes('viator') && 
+            !senderEmailLower.includes('viator') &&
             !senderEmailLower.includes('bokun') &&
             !senderEmailLower.includes('getyourguide') // Good measure for tours
         ) {
