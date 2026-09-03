@@ -150,7 +150,7 @@ async function callDeepSeekTelegram(text) {
 
     try {
         let response = await axios.post('https://api.deepseek.com/chat/completions', {
-            model: 'deepseek-v4-pro', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
+            model: 'deepseek-v4-flash', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
         }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
         if (response.data.choices && response.data.choices.length > 0) {
@@ -167,7 +167,7 @@ async function callDeepSeekTelegram(text) {
                 }
 
                 response = await axios.post('https://api.deepseek.com/chat/completions', {
-                    model: 'deepseek-v4-pro', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
+                    model: 'deepseek-v4-flash', messages: messages, tools: deepseekTelegramTools, temperature: 0.7
                 }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
                 message = response.data.choices[0].message;
@@ -781,7 +781,7 @@ async function generateCommentReply(commentText) {
     if (ACTIVE_AI === 'deepseek') {
         try {
             const response = await axios.post('https://api.deepseek.com/chat/completions', {
-                model: 'deepseek-v4-pro',
+                model: 'deepseek-v4-flash',
                 messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
             }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
 
@@ -1101,7 +1101,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
     while (retries > 0) {
         try {
             response = await axios.post('https://api.deepseek.com/chat/completions', {
-                model: 'deepseek-v4-pro', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
+                model: 'deepseek-v4-flash', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
             }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
             break; // Success
         } catch (e) {
