@@ -271,7 +271,7 @@ async function callGeminiTelegram(text) {
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
@@ -295,7 +295,7 @@ async function callGeminiTelegram(text) {
                     };
 
                     const res2 = await axios.post(
-                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
                         secondPayload
                     );
                     if (res2.data.candidates && res2.data.candidates.length > 0) {
@@ -617,10 +617,10 @@ async function processWebhook(data) {
                                 geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
                                 if (!geminiReply) {
                                     console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
-                                    geminiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'whatsapp');
+                                    geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                                 }
                             } else {
-                                geminiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'whatsapp');
+                                geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                             }
                             if (geminiReply) {
                                 if (geminiReply.match(/IGNORE/i)) return;
@@ -710,7 +710,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
                     aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
                 } else {
                     const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
-                    aiReply = await callGemini(senderId, geminiCtx, "gemini-2.5-pro", false, 0, 'instagram');
+                    aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
                 }
 
                 if (aiReply) {
@@ -745,9 +745,9 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             let aiReply;
             if (ACTIVE_AI === 'deepseek') {
                 aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
-                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'instagram');
+                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             } else {
-                aiReply = await callGemini(senderId, [], "gemini-2.5-pro", false, 0, 'instagram');
+                aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             }
             if (aiReply) {
                 if (aiReply.match(/IGNORE/i)) return;
@@ -791,7 +791,7 @@ async function generateCommentReply(commentText) {
         } catch (error) { console.error("DeepSeek Comment Reply Error:", error.message); }
     } else {
         try {
-            const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+            const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
                 system_instruction: { parts: [{ text: systemPrompt }] },
                 contents: [{ role: "user", parts: [{ text: `User's Comment: "${commentText}"` }] }]
             });
@@ -1185,7 +1185,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 }
 
 
-async function callGemini(senderId, extraContext = [], model = "gemini-2.5-pro", isEmail = false, depth = 0, platform = 'whatsapp') {
+async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash", isEmail = false, depth = 0, platform = 'whatsapp') {
     if (depth > 3) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -1642,7 +1642,7 @@ Output NOTHING ELSE except "YES" or "NO". Default to "NO" if you are unsure.`;
 
     try {
         const response = await axios.post(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
             payload
         );
         if (response.data.candidates && response.data.candidates.length > 0) {
@@ -1772,7 +1772,7 @@ app.post('/gmail-webhook', async (req, res) => {
         if (ACTIVE_AI === 'deepseek') {
             aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
         } else {
-            aiReply = await callGemini(senderEmail, [], "gemini-2.5-pro", true, 0, 'gmail');
+            aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         }
 
         if (aiReply) {
