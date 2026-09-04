@@ -24,7 +24,7 @@ const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'gemini';
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -1354,28 +1354,37 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                                 sheetMessage = err.message;
                             }
                         }
-                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
-                    } else if (call.name === 'search_sheet_booking') {
-                        console.log(`[Google Sheets] Executing search_sheet_booking | Args: ${JSON.stringify(call.args)}`);
+                    } else if (call.name === 'manage_sheet_booking' || call.name === 'search_sheet_booking') {
+                        console.log(`[Gemini Tool] AI is running ${call.name}`);
                         let sheetStatus = "error";
-                        let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+                        let sheetMessage = "GOOGLE_SHEET_API_URL not configured.";
+
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
-                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
+                                const sheetPayload = call.name === "search_sheet_booking" ? { action: 'SEARCH', search_query: call.args.search_query } : call.args;
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
+
+                                if (call.name === "manage_sheet_booking" && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
+                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (GEMINI)*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`);
+                                    }
+                                }
                             } catch (err) {
                                 sheetMessage = err.message;
                             }
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
-                    } else if (call.name === 'search_hotel_booking') {
-                        console.log(`[Google Sheets] Executing search_hotel_booking | Args: ${JSON.stringify(call.args)}`);
+                    } else if (call.name === 'manage_hotel_booking' || call.name === 'search_hotel_booking') {
+                        console.log(`[Gemini Tool] AI is running ${call.name}`);
                         let sheetStatus = "error";
-                        let sheetMessage = "HOTEL_SHEET_API_URL not configured in backend.";
+                        let sheetMessage = "HOTEL_SHEET_API_URL not configured.";
+
                         if (process.env.HOTEL_SHEET_API_URL) {
                             try {
-                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, { action: 'SEARCH', search_query: call.args.search_query });
+                                const sheetPayload = call.name === "search_hotel_booking" ? { action: 'SEARCH', search_query: call.args.search_query } : call.args;
+                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
                             } catch (err) {
@@ -1399,10 +1408,6 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                     await appendHistory(senderId, "model", firstTurnText);
                     return firstTurnText;
                 } else if (firstTurnText && recursiveReply) {
-                    const combined = firstTurnText + "\n" + recursiveReply;
-                    // The recursive call already appended itself, so we need to be careful with history here.
-                    // Actually, the recursive call appended `recursiveReply`. If we want to return combined, we should fix history.
-                    // To keep it simple: just return the recursive reply, but if it's empty, return the first turn text.
                     return recursiveReply;
                 }
                 return recursiveReply;
@@ -1414,7 +1419,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
             }
         }
     } catch (error) {
-        console.error("Gemini Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        console.error("Gemini Processing Error:", error.message);
     }
     return null;
 }
