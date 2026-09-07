@@ -161,7 +161,12 @@ async function callDeepSeekTelegram(text) {
 
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
-                    const args = JSON.parse(toolCall.function.arguments || '{}');
+                    let args = {};
+                    try {
+                        args = JSON.parse(toolCall.function.arguments || '{}');
+                    } catch (e) {
+                        console.error(`[DeepSeek JSON Error] ${funcName}:`, e.message);
+                    }
                     const toolResult = await executeTelegramTool(funcName, args);
                     messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResult) });
                 }
@@ -1125,7 +1130,12 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
-                    const args = JSON.parse(toolCall.function.arguments || '{}');
+                    let args = {};
+                    try {
+                        args = JSON.parse(toolCall.function.arguments || '{}');
+                    } catch (e) {
+                        console.error(`[DeepSeek JSON Error] ${funcName}:`, e.message);
+                    }
                     let resultStr = "";
 
                     if (funcName === "record_booking") {
@@ -1354,36 +1364,31 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                                 sheetMessage = err.message;
                             }
                         }
-                    } else if (call.name === 'manage_sheet_booking' || call.name === 'search_sheet_booking') {
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
+                    } else if (call.name === 'search_sheet_booking') {
                         console.log(`[Gemini Tool] AI is running ${call.name}`);
                         let sheetStatus = "error";
                         let sheetMessage = "GOOGLE_SHEET_API_URL not configured.";
 
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
-                                const sheetPayload = call.name === "search_sheet_booking" ? { action: 'SEARCH', search_query: call.args.search_query } : call.args;
+                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query };
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
-
-                                if (call.name === "manage_sheet_booking" && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
-                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (GEMINI)*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`);
-                                    }
-                                }
                             } catch (err) {
                                 sheetMessage = err.message;
                             }
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: sheetStatus, message: sheetMessage } } });
-                    } else if (call.name === 'manage_hotel_booking' || call.name === 'search_hotel_booking') {
+                    } else if (call.name === 'search_hotel_booking') {
                         console.log(`[Gemini Tool] AI is running ${call.name}`);
                         let sheetStatus = "error";
                         let sheetMessage = "HOTEL_SHEET_API_URL not configured.";
 
                         if (process.env.HOTEL_SHEET_API_URL) {
                             try {
-                                const sheetPayload = call.name === "search_hotel_booking" ? { action: 'SEARCH', search_query: call.args.search_query } : call.args;
+                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query };
                                 const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
