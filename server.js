@@ -1552,18 +1552,23 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
         text: { preview_url: false, body: textMessage }
     };
 
-    try {
-        const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced to 5s to allow human takeover without breaking race condition
-        const response = await axios.post(url, payload, {
-            headers: { Authorization: `Bearer ${bearerToken}` }
-        });
-        if (response.data && response.data.messages && response.data.messages.length > 0) {
-            cacheSet(response.data.messages[0].id, "true", 300);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const cleanTo = recipientPhone.toString().replace(/\D/g, '');
+            cacheSet(`ai_sent_${cleanTo}`, "true", 5);
+            const response = await axios.post(url, payload, {
+                headers: { Authorization: `Bearer ${bearerToken}` }
+            });
+            if (response.data && response.data.messages && response.data.messages.length > 0) {
+                cacheSet(response.data.messages[0].id, "true", 300);
+            }
+            console.log(`[Sent] Message to ${recipientPhone}`);
+            return; // Success, exit loop
+        } catch (error) {
+            console.error(`WhatsApp Send Error (Attempt ${attempt}/3):`, error.response ? error.response.data : error.message);
+            if (attempt === 3) return; // Give up after 3 tries
+            await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
         }
-        console.log(`[Sent] Message to ${recipientPhone}`);
-    } catch (error) {
-        console.error("WhatsApp Send Error:", error.response ? error.response.data : error.message);
     }
 }
 
@@ -1573,23 +1578,33 @@ async function sendInstagramDM(recipientId, textMessage) {
         recipient: { id: recipientId },
         message: { text: textMessage }
     };
-    try {
-        cacheSet(`ai_sent_${recipientId}`, "true", 5);
-        await axios.post(url, payload);
-        console.log(`[Sent] Instagram DM to ${recipientId}`);
-    } catch (error) {
-        console.error("Instagram Send Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            cacheSet(`ai_sent_${recipientId}`, "true", 5);
+            await axios.post(url, payload);
+            console.log(`[Sent] Instagram DM to ${recipientId}`);
+            return;
+        } catch (error) {
+            console.error(`Instagram Send Error (Attempt ${attempt}/3):`, error.response ? JSON.stringify(error.response.data) : error.message);
+            if (attempt === 3) return;
+            await new Promise(r => setTimeout(r, 2000));
+        }
     }
 }
 
 async function replyToInstagramComment(commentId, textMessage) {
     const url = `https://graph.facebook.com/v21.0/${commentId}/replies?access_token=${META_IG_ACCESS_TOKEN}`;
     const payload = { message: textMessage };
-    try {
-        await axios.post(url, payload);
-        console.log(`[Sent] Reply to Comment ${commentId}`);
-    } catch (error) {
-        console.error("Instagram Comment Reply Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            await axios.post(url, payload);
+            console.log(`[Sent] Reply to Comment ${commentId}`);
+            return;
+        } catch (error) {
+            console.error(`Instagram Comment Reply Error (Attempt ${attempt}/3):`, error.response ? JSON.stringify(error.response.data) : error.message);
+            if (attempt === 3) return;
+            await new Promise(r => setTimeout(r, 2000));
+        }
     }
 }
 
@@ -1609,18 +1624,23 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
         }
     };
 
-    try {
-        const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-        cacheSet(`ai_sent_${cleanTo}`, "true", 5); // BUGFIX: Reduced from 300s to 5s to allow human takeover
-        const response = await axios.post(url, payload, {
-            headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
-        });
-        if (response.data && response.data.messages && response.data.messages.length > 0) {
-            cacheSet(response.data.messages[0].id, "true", 300);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const cleanTo = recipientPhone.toString().replace(/\D/g, '');
+            cacheSet(`ai_sent_${cleanTo}`, "true", 5);
+            const response = await axios.post(url, payload, {
+                headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+            });
+            if (response.data && response.data.messages && response.data.messages.length > 0) {
+                cacheSet(response.data.messages[0].id, "true", 300);
+            }
+            console.log(`[Sent] Template ${templateName} to ${recipientPhone}`);
+            return;
+        } catch (error) {
+            console.error(`WhatsApp Template Send Error (Attempt ${attempt}/3):`, error.response ? JSON.stringify(error.response.data) : error.message);
+            if (attempt === 3) return;
+            await new Promise(r => setTimeout(r, 2000));
         }
-        console.log(`[Sent] Template ${templateName} to ${recipientPhone}`);
-    } catch (error) {
-        console.error("WhatsApp Template Send Error:", error.response ? JSON.stringify(error.response.data) : error.message);
     }
 }
 
