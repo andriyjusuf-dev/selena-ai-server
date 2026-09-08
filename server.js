@@ -54,6 +54,31 @@ async function sendTelegramAlert(textMessage) {
     }
 }
 
+// ==========================================
+// 1.2 GLOBAL ERROR MONITORING (RENDER LOGS)
+// ==========================================
+process.on('uncaughtException', async (err) => {
+    console.log("[Global Error] Uncaught Exception:", err.message);
+    await sendTelegramAlert(`🚨 *CRITICAL SERVER CRASH (Render)*\n\n\`${err.message}\`\n\nRestarting...`);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', async (reason, promise) => {
+    console.log("[Global Error] Unhandled Rejection at:", promise, "reason:", reason);
+    const msg = reason instanceof Error ? reason.message : JSON.stringify(reason);
+    await sendTelegramAlert(`⚠️ *Unhandled Promise Rejection (Render)*\n\n\`${msg}\``);
+});
+
+const originalConsoleError = console.error;
+console.error = function (...args) {
+    const errorStr = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
+    // Prevent infinite loops if Telegram fails
+    if (!errorStr.includes('Telegram Error:')) {
+        sendTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(()=>{});
+    }
+    originalConsoleError.apply(console, args);
+};
+
 async function executeTelegramTool(funcName, args) {
     if (funcName === 'check_recent_bookings') {
         console.log(`[Telegram Tool] AI is running check_recent_bookings`);
@@ -116,7 +141,7 @@ async function executeTelegramTool(funcName, args) {
         let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
         if (process.env.GOOGLE_SHEET_API_URL) {
             try {
-                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: args.search_query });
+                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month });
                 sheetStatus = "success";
                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
             } catch (err) {
@@ -140,7 +165,7 @@ async function callDeepSeekTelegram(text) {
         { type: "function", function: { name: "pause_customer", description: "Pause the AI for a specific customer for a given number of minutes.", parameters: { type: "object", properties: { phone_number: { type: "string" }, duration_minutes: { type: "integer" } }, required: ["phone_number", "duration_minutes"] } } },
         { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
-        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" } }, required: ["search_query"] } } }
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } }
     ];
 
     let messages = [
