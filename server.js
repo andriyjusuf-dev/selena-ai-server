@@ -947,7 +947,8 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
-        basePrompt += `If automated receipt: 1. 'manage_sheet_booking' (SEARCH). 2. If booked: do nothing. 3. If NOT: (ADD). 4. Output ONLY: IGNORE.\nIf the email is obviously 100% malicious spam: output ONLY: IGNORE.\nNote: Do NOT output IGNORE for legitimate customer inquiries, even if they have weird formatting or marketing footers.\n\n`;
+        basePrompt += `[AUTOMATED RECEIPTS / BOKUN / VIATOR]: If you receive an automated booking receipt or notification (from Viator, Bokun, GetYourGuide, or any email that contains a new booking with a customer name, date, and dive type): You MUST extract the details and call 'manage_sheet_booking' (SEARCH). If they are not in the sheet, call (ADD) to record the booking! You are EXEMPT from the 'CRITICAL TOOL RESTRICTION' for automated receipts. After adding, output ONLY: IGNORE.\n`;
+        basePrompt += `If the email is obviously 100% malicious spam: output ONLY: IGNORE.\nNote: Do NOT output IGNORE for legitimate customer inquiries, even if they have weird formatting or marketing footers.\n\n`;
     } else {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
     }
@@ -961,7 +962,7 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     // Core Tools Instruction
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
-    basePrompt += `CRITICAL TOOL RESTRICTION: You are STRICTLY FORBIDDEN from calling 'manage_sheet_booking', 'manage_hotel_booking', 'search_sheet_booking', or 'search_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If they ask about a booking but you are missing their name or dates, you MUST reply by asking them for those details BEFORE calling any tools!\n`;
+    basePrompt += `CRITICAL TOOL RESTRICTION: For direct customer chats, you are STRICTLY FORBIDDEN from calling 'manage_sheet_booking' or 'manage_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If missing, ask them first. (This restriction does NOT apply to automated email receipts).\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first. CRITICAL: If a user asks you to check a booking, you MUST actually run the SEARCH tool. NEVER rely on your past memory or previous chat history to answer them, because the sheet may have changed!\n`;
     basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., take the first 3 letters of whatever their name is) to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
