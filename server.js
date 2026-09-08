@@ -1361,7 +1361,6 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
             let firstTurnText = textPart ? textPart.text : null;
 
             if (functionCalls.length > 0) {
-                const funcCallCtx = response.data.candidates[0].content;
                 const funcResParts = [];
 
                 for (const call of functionCalls) {
@@ -1454,7 +1453,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     }
                 }
-
+                const funcCallContent = response.data.candidates[0].content;
+                const funcCallCtx = { role: "model", parts: funcCallContent.parts };
                 const funcResCtx = { role: "function", parts: funcResParts };
                 const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1, platform);
 
@@ -1473,7 +1473,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
             }
         }
     } catch (error) {
-        console.error("Gemini Processing Error:", error.message);
+        console.error("Gemini Processing Error:", error.response ? JSON.stringify(error.response.data) : error.message);
     }
     return null;
 }
