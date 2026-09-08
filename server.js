@@ -54,19 +54,31 @@ async function sendTelegramAlert(textMessage) {
     }
 }
 
+async function sendErrorTelegramAlert(textMessage) {
+    if (!TELEGRAM_BOT_TOKEN) return;
+    const chatId = process.env.PERSONAL_TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    try {
+        await axios.post(url, { chat_id: chatId, text: textMessage });
+    } catch (error) {
+        console.error("Telegram Error:", error.response ? error.response.data : error.message);
+    }
+}
+
 // ==========================================
 // 1.2 GLOBAL ERROR MONITORING (RENDER LOGS)
 // ==========================================
 process.on('uncaughtException', async (err) => {
     console.log("[Global Error] Uncaught Exception:", err.message);
-    await sendTelegramAlert(`🚨 *CRITICAL SERVER CRASH (Render)*\n\n\`${err.message}\`\n\nRestarting...`);
+    await sendErrorTelegramAlert(`🚨 *CRITICAL SERVER CRASH (Render)*\n\n\`${err.message}\`\n\nRestarting...`);
     process.exit(1);
 });
 
 process.on('unhandledRejection', async (reason, promise) => {
     console.log("[Global Error] Unhandled Rejection at:", promise, "reason:", reason);
     const msg = reason instanceof Error ? reason.message : JSON.stringify(reason);
-    await sendTelegramAlert(`⚠️ *Unhandled Promise Rejection (Render)*\n\n\`${msg}\``);
+    await sendErrorTelegramAlert(`⚠️ *Unhandled Promise Rejection (Render)*\n\n\`${msg}\``);
 });
 
 const originalConsoleError = console.error;
@@ -74,7 +86,7 @@ console.error = function (...args) {
     const errorStr = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
     // Prevent infinite loops if Telegram fails
     if (!errorStr.includes('Telegram Error:')) {
-        sendTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(()=>{});
+        sendErrorTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(()=>{});
     }
     originalConsoleError.apply(console, args);
 };
