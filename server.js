@@ -1042,7 +1042,8 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                         new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
                         old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
                         old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
-                        search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
+                        search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." },
+                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
                     }, required: ["action"]
                 }
             }
@@ -1054,7 +1055,10 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
                 parameters: {
                     type: "object",
-                    properties: { search_query: { type: "string" } }, required: ["search_query"]
+                    properties: { 
+                        search_query: { type: "string" },
+                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
+                    }, required: ["search_query"]
                 }
             }
         },
@@ -1081,7 +1085,8 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                         target_dates: { type: "array", items: { type: "string" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
                         guest_name: { type: "string", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
                         old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
-                        search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
+                        search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." },
+                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
                     },
                     required: ["action", "target_dates"]
                 }
@@ -1094,7 +1099,10 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 description: "Search the live Hotel calendar for a customer's booking without modifying it.",
                 parameters: {
                     type: "object",
-                    properties: { search_query: { type: "string" } }, required: ["search_query"]
+                    properties: { 
+                        search_query: { type: "string" },
+                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
+                    }, required: ["search_query"]
                 }
             }
         }
@@ -1151,7 +1159,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                     } else if (funcName === "manage_sheet_booking" || funcName === "search_sheet_booking") {
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
-                                const payload = funcName === "search_sheet_booking" ? { action: 'SEARCH', search_query: args.search_query } : args;
+                                const payload = funcName === "search_sheet_booking" ? { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month } : args;
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
                                 resultStr = sheetRes.data.status || "Completed";
 
@@ -1165,7 +1173,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                     } else if (funcName === "manage_hotel_booking" || funcName === "search_hotel_booking") {
                         if (process.env.HOTEL_SHEET_API_URL) {
                             try {
-                                const payload = funcName === "search_hotel_booking" ? { action: 'SEARCH', search_query: args.search_query } : args;
+                                const payload = funcName === "search_hotel_booking" ? { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month } : args;
                                 const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, payload);
                                 resultStr = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || sheetRes.data.status || "Completed");
 
@@ -1232,7 +1240,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                 new_text: { type: "STRING", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
                 old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
                 old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
-                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." }
+                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet. Required for SEARCH." },
+                target_month: { type: "STRING", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
             },
             required: ["action"]
         }
@@ -1252,7 +1261,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
         parameters: {
             type: "OBJECT",
             properties: {
-                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." }
+                search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." },
+                target_month: { type: "STRING", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
             },
             required: ["search_query"]
         }
@@ -1266,7 +1276,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                 target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
                 guest_name: { type: "STRING", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
                 old_guest_match: { type: "STRING", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
-                search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }
+                search_query: { type: "STRING", description: "Guest name to search for across the hotel sheet. Required for SEARCH." },
+                target_month: { type: "STRING", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
             },
             required: ["action", "target_dates"]
         }
@@ -1276,7 +1287,8 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
         parameters: {
             type: "OBJECT",
             properties: {
-                search_query: { type: "STRING", description: "Guest name or string to search for across the hotel sheet." }
+                search_query: { type: "STRING", description: "Guest name or string to search for across the hotel sheet." },
+                target_month: { type: "STRING", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
             },
             required: ["search_query"]
         }
@@ -1372,7 +1384,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
 
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
-                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query };
+                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query, target_month: call.args.target_month };
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.status || "Completed");
@@ -1388,7 +1400,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
 
                         if (process.env.HOTEL_SHEET_API_URL) {
                             try {
-                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query };
+                                const sheetPayload = { action: 'SEARCH', search_query: call.args.search_query, target_month: call.args.target_month };
                                 const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, sheetPayload);
                                 sheetStatus = "success";
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
