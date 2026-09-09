@@ -1456,7 +1456,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                 }
                 const funcCallContent = response.data.candidates[0].content;
                 const funcCallCtx = { role: "model", parts: funcCallContent.parts };
-                const funcResCtx = { role: "function", parts: funcResParts };
+                const funcResCtx = { role: "user", parts: funcResParts };
                 const recursiveReply = await callGemini(senderId, [...extraContext, funcCallCtx, funcResCtx], model, isEmail, depth + 1, platform);
 
                 if (firstTurnText && !recursiveReply) {
