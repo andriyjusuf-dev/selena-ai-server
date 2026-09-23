@@ -967,8 +967,8 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., take the first 3 letters of whatever their name is) to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
-    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]. specreq: [req]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?\n`;
-    basePrompt += `Ex: "GuestName TD DPO, OtherName RESCC ?, specreq: none"\n`;
+    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?. MULTIPLE GUESTS: MUST separate each guest with a semicolon (;). Add special requests at the end after a pipe (|).\n`;
+    basePrompt += `Ex: "GuestName TD DPO; OtherName RESCC ? | specreq: none"\n`;
     basePrompt += `--- HOTEL BOOKINGS ('manage_hotel_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n\n`;
 
