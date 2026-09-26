@@ -19,12 +19,16 @@ const META_IG_VERIFY_TOKEN = process.env.META_IG_VERIFY_TOKEN || process.env.MET
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_IG_ACCESS_TOKEN = process.env.META_IG_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
-const META_IG_USER_ID = process.env.META_IG_USER_ID; // Added for Instagram
+const META_IG_USER_ID = process.env.META_IG_USER_ID; 
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
+
+// NEW: Qwen Ngrok API URL
+const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://127.0.0.1:11434/v1/chat/completions';
+// Set Default AI to Qwen
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'qwen';
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -84,7 +88,6 @@ process.on('unhandledRejection', async (reason, promise) => {
 const originalConsoleError = console.error;
 console.error = function (...args) {
     const errorStr = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
-    // Prevent infinite loops if Telegram fails
     if (!errorStr.includes('Telegram Error:')) {
         sendErrorTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(()=>{});
     }
@@ -132,7 +135,10 @@ async function executeTelegramTool(funcName, args) {
         console.log(`[Telegram Tool] AI is running message_customer for: ${args.phone_number}`);
         await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
         let botReply;
-        if (ACTIVE_AI === 'deepseek') {
+        if (ACTIVE_AI === 'qwen') {
+            const qwenContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
+            botReply = await callQwen(args.phone_number, null, qwenContext);
+        } else if (ACTIVE_AI === 'deepseek') {
             const deepseekContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
             botReply = await callDeepSeek(args.phone_number, null, deepseekContext);
         } else {
@@ -163,6 +169,61 @@ async function executeTelegramTool(funcName, args) {
         return { status: sheetStatus, message: sheetMessage };
     }
     return { status: "error", message: "Unknown tool function." };
+}
+
+// NEW QWEN TELEGRAM FUNCTION
+async function callQwenTelegram(text) {
+    const systemPrompt = await buildSystemPrompt(false);
+    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.`;
+
+    const qwenTelegramTools = [
+        { type: "function", function: { name: "check_recent_bookings", description: "Look up recent bookings in the database.", parameters: { type: "object", properties: { limit: { type: "integer" } } } } },
+        { type: "function", function: { name: "list_rules", description: "Fetch all current rules from the master database.", parameters: { type: "object", properties: {} } } },
+        { type: "function", function: { name: "add_rule", description: "Add a new rule to the master database.", parameters: { type: "object", properties: { rule_text: { type: "string" } }, required: ["rule_text"] } } },
+        { type: "function", function: { name: "delete_rule", description: "Delete an existing rule.", parameters: { type: "object", properties: { rule_text_match: { type: "string" } }, required: ["rule_text_match"] } } },
+        { type: "function", function: { name: "pause_customer", description: "Pause the AI for a specific customer for a given number of minutes.", parameters: { type: "object", properties: { phone_number: { type: "string" }, duration_minutes: { type: "integer" } }, required: ["phone_number", "duration_minutes"] } } },
+        { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
+        { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } }
+    ];
+
+    let messages = [
+        { role: 'system', content: telegramPrompt },
+        { role: 'user', content: text }
+    ];
+
+    try {
+        let response = await axios.post(OLLAMA_API_URL, {
+            model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
+        }, { headers: { 'Content-Type': 'application/json' } });
+
+        if (response.data.choices && response.data.choices.length > 0) {
+            let message = response.data.choices[0].message;
+
+            while (message.tool_calls && message.tool_calls.length > 0) {
+                messages.push(message);
+
+                for (const toolCall of message.tool_calls) {
+                    const funcName = toolCall.function.name;
+                    let args = {};
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    catch (e) { console.error(`[Qwen JSON Error] ${funcName}:`, e.message); }
+                    const toolResult = await executeTelegramTool(funcName, args);
+                    messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResult) });
+                }
+
+                response = await axios.post(OLLAMA_API_URL, {
+                    model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
+                }, { headers: { 'Content-Type': 'application/json' } });
+
+                message = response.data.choices[0].message;
+            }
+            if (message.content) return message.content;
+        }
+    } catch (e) {
+        console.error("Qwen Telegram Error:", e.response ? JSON.stringify(e.response.data) : e.message);
+    }
+    return null;
 }
 
 async function callDeepSeekTelegram(text) {
@@ -331,8 +392,8 @@ async function callGeminiTelegram(text) {
                         system_instruction: { parts: [{ text: telegramPrompt }] },
                         contents: [
                             { role: "user", parts: [{ text: text }] },
-                            response.data.candidates[0].content, // the function call
-                            funcResCtx // the function response
+                            response.data.candidates[0].content, 
+                            funcResCtx 
                         ]
                     };
 
@@ -373,11 +434,11 @@ app.post('/telegram-webhook', async (req, res) => {
 
                 if (cleanText.toLowerCase().startsWith('!switch_ai ')) {
                     const newAi = cleanText.split(' ')[1].toLowerCase();
-                    if (newAi === 'gemini' || newAi === 'deepseek') {
+                    if (newAi === 'qwen' || newAi === 'gemini' || newAi === 'deepseek') {
                         ACTIVE_AI = newAi;
                         await sendTelegramAlert(`✅ 🧠 AI Brain switched to **${newAi.toUpperCase()}** successfully for WhatsApp traffic.`);
                     } else {
-                        await sendTelegramAlert(`❌ Unknown AI provider. Use '!switch_ai gemini' or '!switch_ai deepseek'`);
+                        await sendTelegramAlert(`❌ Unknown AI provider. Use '!switch_ai qwen', '!switch_ai deepseek', or '!switch_ai gemini'`);
                     }
                     return;
                 }
@@ -396,7 +457,9 @@ app.post('/telegram-webhook', async (req, res) => {
                     });
 
                     let reply = "";
-                    if (ACTIVE_AI === 'deepseek') {
+                    if (ACTIVE_AI === 'qwen') {
+                        reply = await callQwenTelegram(cleanText);
+                    } else if (ACTIVE_AI === 'deepseek') {
                         reply = await callDeepSeekTelegram(cleanText);
                     } else {
                         reply = await callGeminiTelegram(cleanText);
@@ -447,7 +510,6 @@ app.post('/kiosk-chat', async (req, res) => {
             parts: [{ text: `[SYSTEM OVERRIDE: You are speaking to a physical person at the front desk kiosk. Keep answers short, conversational, and friendly. DO NOT use any emojis, emoticons, or action asterisks (like *smiles*), as they will be read awkwardly by the text-to-speech engine. Speak naturally with human intonation. They are speaking to you in this language: ${language || 'English'}. Reply in that language. If the customer wants to speak with a human, or if they ask a question you cannot answer, organically tell them to WhatsApp our Human Agent at +6281285325669.]` }]
         }];
 
-        // Use a dedicated session ID for the Kiosk and force the Flash model for speed
         const botReply = await callGemini('KIOSK_DESK_1', extraContext.concat([{ role: 'user', parts: [{ text: text }] }]), "gemini-3.1-flash-lite");
         return res.json({ reply: botReply || "Sorry, I am having trouble connecting to my brain right now." });
     } catch (e) {
@@ -484,10 +546,7 @@ app.post('/kiosk-translate', async (req, res) => {
 // 2. INCOMING MESSAGES (POST)
 // ==========================================
 app.post('/whatsapp-webhook', (req, res) => {
-    // ALWAYS return 200 OK immediately to decouple and prevent Meta timeout
     res.status(200).send({ status: "success" });
-
-    // Process async
     processWebhook(req.body).catch(console.error);
 });
 
@@ -503,10 +562,8 @@ async function processWebhook(data) {
     for (let i = 0; i < entry.changes.length; i++) {
         const change = entry.changes[i];
         const value = change.value;
-        // Pause briefly to avoid race conditions with axios.post returning msgId
         await sleep(1500);
 
-        // --- A. STATUSES WEBHOOK (Gives us Customer ID for human takeover) ---
         if (change.field === 'statuses' || value.statuses) {
             const statusList = value.statuses;
             if (statusList && statusList.length > 0) {
@@ -516,7 +573,6 @@ async function processWebhook(data) {
                     const targetId = statusObj.recipient_id ? statusObj.recipient_id.toString().replace(/\D/g, '') : null;
                     const aiSent = cacheGet(msgId) || cacheGet(`ai_sent_${targetId}`);
 
-                    // If AI didn't send it, human did!
                     if (!aiSent && targetId) {
                         cacheSet(`last_paused_target`, targetId, 15);
                         const orphanedText = cacheGet(`orphan_echo`);
@@ -534,7 +590,6 @@ async function processWebhook(data) {
             }
         }
 
-        // --- B. MESSAGES / ECHOES WEBHOOK ---
         if (change.field === 'messages' || change.field === 'smb_message_echoes' || change.field === 'message_echoes') {
             const messageList = value.messages || value.message_echoes || value.smb_message_echoes;
             if (messageList && messageList.length > 0) {
@@ -561,7 +616,7 @@ async function processWebhook(data) {
                         mediaType = 'audio';
                         mediaId = messageObj.audio.id;
                         mimeType = messageObj.audio.mime_type;
-                        textBody = ""; // Voice notes have no caption
+                        textBody = ""; 
                     } else if (messageObj.type === 'document') {
                         isMedia = true;
                         mediaType = 'document';
@@ -575,7 +630,6 @@ async function processWebhook(data) {
                     const isEcho = (change.field === 'smb_message_echoes' || change.field === 'message_echoes' || messageObj.from_me === true);
 
                     if (isEcho) {
-                        // Human is typing
                         const msgId = messageObj.id;
                         let targetId = messageObj.to;
                         if (!targetId && value.contacts && value.contacts.length > 0) {
@@ -583,8 +637,6 @@ async function processWebhook(data) {
                         }
                         if (targetId) targetId = targetId.toString().replace(/\D/g, '');
 
-                        // BUGFIX: Check if Selena actually sent this message just now.
-                        // If she did, do NOT pause the AI!
                         const aiSent = cacheGet(msgId) || (targetId ? cacheGet(`ai_sent_${targetId}`) : false);
 
                         if (!aiSent) {
@@ -603,18 +655,13 @@ async function processWebhook(data) {
                             }
                         }
                     } else {
-                        // Customer or Admin is typing
                         const senderId = messageObj.from;
 
-                        // 1. Check for Admin Training Command
                         if (!isMedia && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
                             await handleAdminCommand(senderId, textBody);
                             return;
                         }
 
-                        // 2. Normal Customer Message
-
-                        // GLOBAL PAUSE & NIGHT MODE LOGIC
                         if (process.env.AI_PAUSED === 'true') {
                             console.log(`[System] AI_PAUSED is active. Ignoring message from ${senderId}.`);
                             return;
@@ -628,8 +675,6 @@ async function processWebhook(data) {
                                 hour12: false
                             });
                             const currentHour = parseInt(baliFormatter.format(now));
-                            // Allow between 18 (6 PM) and 8 (8:59 AM)
-                            // Which means ignore if >= 9 and < 18
                             if (currentHour >= 9 && currentHour < 18) {
                                 console.log(`[System] Night Mode Active (Bali time). Current hour is ${currentHour}. Ignoring message from ${senderId}.`);
                                 return;
@@ -654,8 +699,19 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                         } else {
                             await appendHistory(senderId, "user", contextToSave);
+                            
                             let geminiReply;
-                            if (ACTIVE_AI === 'deepseek') {
+                            if (ACTIVE_AI === 'qwen') {
+                                geminiReply = await callQwen(senderId, null, [], 0, false, 'whatsapp');
+                                if (!geminiReply) {
+                                    console.error(`[AI Fallback] Qwen failed. Falling back to DeepSeek...`);
+                                    geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
+                                    if (!geminiReply) {
+                                        console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
+                                        geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
+                                    }
+                                }
+                            } else if (ACTIVE_AI === 'deepseek') {
                                 geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
                                 if (!geminiReply) {
                                     console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
@@ -664,9 +720,9 @@ async function processWebhook(data) {
                             } else {
                                 geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                             }
+                            
                             if (geminiReply) {
                                 if (geminiReply.match(/IGNORE/i)) return;
-                                // Realistic typing delay: 2s base + 30ms per char (Max 12 seconds)
                                 const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
                                 console.log(`[Typing Delay] Waiting ${delayMs / 1000} seconds...`);
                                 await sleep(delayMs);
@@ -708,7 +764,6 @@ async function handleInstagramMessagingEvent(messagingEvent) {
     if (messagingEvent.message) {
         const messageObj = messagingEvent.message;
 
-        // 1. Check for Human Takeover (Echo)
         if (messageObj.is_echo) {
             const aiSent = cacheGet(`ai_sent_${recipientId}`);
             if (!aiSent) {
@@ -718,7 +773,6 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             return;
         }
 
-        // 2. Customer or Admin is typing
         const textBody = messageObj.text || "";
 
         if (ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
@@ -729,7 +783,6 @@ async function handleInstagramMessagingEvent(messagingEvent) {
         const isPaused = await checkIsPaused(senderId);
         let contextToSave = textBody;
 
-        // Check for Story Mention or Share
         let isStoryAction = false;
         if (messageObj.story && messageObj.story.mention) isStoryAction = true;
         if (messageObj.reply_to && messageObj.reply_to.story && !textBody.trim()) isStoryAction = true;
@@ -747,9 +800,21 @@ async function handleInstagramMessagingEvent(messagingEvent) {
                 await appendHistory(senderId, "user", contextToSave);
 
                 let aiReply;
-                if (ACTIVE_AI === 'deepseek') {
+                if (ACTIVE_AI === 'qwen') {
+                    const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
+                    aiReply = await callQwen(senderId, null, extraContext, 0, false, 'instagram');
+                    if (!aiReply) aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                    if (!aiReply) {
+                        const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
+                        aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
+                    }
+                } else if (ACTIVE_AI === 'deepseek') {
                     const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
                     aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                    if (!aiReply) {
+                        const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
+                        aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
+                    }
                 } else {
                     const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
                     aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
@@ -763,7 +828,6 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             }
         }
 
-        // Check for Attachments (Images, etc.)
         if (messageObj.attachments && messageObj.attachments.length > 0) {
             const attachment = messageObj.attachments[0];
             if (attachment.type === 'image') {
@@ -784,13 +848,19 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             await appendHistory(senderId, "user", contextToSave);
         } else {
             await appendHistory(senderId, "user", contextToSave);
+            
             let aiReply;
-            if (ACTIVE_AI === 'deepseek') {
+            if (ACTIVE_AI === 'qwen') {
+                aiReply = await callQwen(senderId, null, [], 0, false, 'instagram');
+                if (!aiReply) aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
+                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
+            } else if (ACTIVE_AI === 'deepseek') {
                 aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
                 if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             } else {
                 aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             }
+            
             if (aiReply) {
                 if (aiReply.match(/IGNORE/i)) return;
                 const delayMs = Math.min(2000 + (aiReply.length * 30), 12000);
@@ -820,7 +890,15 @@ async function handleInstagramCommentEvent(commentValue) {
 async function generateCommentReply(commentText) {
     const systemPrompt = `You are the friendly owner of an Instagram page. A user just commented on your post. Generate a short, positive, and appreciative reply to their comment. Keep it under 2 sentences, use nice emojis. If their comment is negative or toxic, reply with a calm, polite message or a simple acknowledgment.`;
 
-    if (ACTIVE_AI === 'deepseek') {
+    if (ACTIVE_AI === 'qwen') {
+        try {
+            const response = await axios.post(OLLAMA_API_URL, {
+                model: 'qwen3.6:35b-a3b',
+                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
+            }, { headers: { 'Content-Type': 'application/json' } });
+            if (response.data.choices && response.data.choices.length > 0) return response.data.choices[0].message.content;
+        } catch (error) { console.error("Qwen Comment Reply Error:", error.message); }
+    } else if (ACTIVE_AI === 'deepseek') {
         try {
             const response = await axios.post('https://api.deepseek.com/chat/completions', {
                 model: 'deepseek-flash',
@@ -875,7 +953,6 @@ async function getHistory(senderId) {
         return [];
     }
 
-    // Reverse so oldest is first
     return data.reverse().map(row => ({
         role: row.role,
         parts: [{ text: row.message_text }]
@@ -908,7 +985,6 @@ async function checkIsPaused(senderId) {
 }
 
 async function pauseAI(senderId, humanMessage) {
-    // Pause for 3 minutes
     const pausedUntil = new Date();
     pausedUntil.setMinutes(pausedUntil.getMinutes() + 3);
 
@@ -955,12 +1031,10 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     basePrompt += `CRITICAL FORMATTING INSTRUCTION: You are participating in an ongoing chat. DO NOT output a transcript of the conversation. DO NOT repeat, summarize, or answer old questions from the history. ONLY provide your direct, natural reply to the very last user message.\n\n`;
 
-    // Core Behavioral Rules
     basePrompt += `CRITICAL LANGUAGE RULE: You MUST analyze the language of the user's most recent message and reply in the EXACT SAME language! If they speak Spanish, reply in Spanish. If Indonesian, reply in Indonesian.\n\n`;
     basePrompt += `CRITICAL REFUSAL RULE: If you are instructed that a date is fully booked, and a customer asks for that date: 1) If they provide their name, you MUST run SEARCH first. If they are already in the sheet, confirm their booking. If they are NOT in the sheet, apologize and offer alternative dates. 2) If they do NOT provide a name (just asking for availability), DO NOT ask for their name—just apologize, explain you are fully booked, and proactively offer alternative dates.\n\n`;
     basePrompt += `CRITICAL 'LAST WORD' RULE: You MUST always have the last word in a conversation. If the customer sends a simple statement, an 'okay', or a 'thank you', you MUST reply to politely acknowledge it (e.g., 'You're welcome!', 'Great, let me know if you need anything else!'). NEVER output 'IGNORE' just because they didn't ask a direct question.\n\n`;
 
-    // Core Tools Instruction
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `CRITICAL TOOL RESTRICTION: For direct customer chats, you are STRICTLY FORBIDDEN from calling 'manage_sheet_booking' or 'manage_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If missing, ask them first. (This restriction does NOT apply to automated email receipts).\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' first before making changes. CRITICAL: If a user asks you to check a booking, you MUST run the SEARCH tool. HOWEVER, if the recent chat history clearly shows you ALREADY successfully confirmed, updated, or checked their booking in this exact conversation, DO NOT run the SEARCH or UPDATE tools again! Just reply naturally to their ongoing messages (e.g. 'You're welcome!').\n`;
@@ -986,7 +1060,7 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 }
 
 // ==========================================
-// 4. GEMINI API LOGIC
+// 4. API LOGIC (QWEN, DEEPSEEK, GEMINI)
 // ==========================================
 async function handleBookingNotification(args, senderId) {
     const now = new Date();
@@ -994,7 +1068,6 @@ async function handleBookingNotification(args, senderId) {
 
     console.log(`[Booking] Detected booking. Bali Hour: ${baliHour}`);
 
-    // Save to Database
     try {
         await supabase.from('bookings').insert([{
             customer_phone: senderId,
@@ -1017,11 +1090,138 @@ async function handleBookingNotification(args, senderId) {
         for (const adminPhone of ADMIN_NUMBERS) {
             if (adminPhone.trim().length > 0) {
                 await sendWhatsAppMessage(adminPhone.trim(), msg);
-                await sleep(500); // prevent rate limits
+                await sleep(500);
             }
         }
     }
     console.log(`[Booking] Alert sent to Admins.`);
+}
+
+// NEW: QWEN API FUNCTION
+async function callQwen(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp') {
+    if (depth > 5) {
+        console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
+        return "IGNORE";
+    }
+
+    let history = await getDeepSeekHistory(senderId); 
+    let latestUserMessage = "Please respond to the ongoing conversation or tool results.";
+
+    if (userMessage) {
+        latestUserMessage = userMessage;
+    } else if (history.length > 0) {
+        const lastMsg = history.pop();
+        latestUserMessage = lastMsg.content;
+    }
+
+    let systemPrompt = await buildSystemPrompt(isEmail, platform);
+
+    if (history.length > 0) {
+        const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n\n');
+        systemPrompt += `\n[PAST CONVERSATION CONTEXT]\n${historyText}\n\n[END PAST CONTEXT]\n`;
+    }
+
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: latestUserMessage },
+        ...extraContext
+    ];
+
+    const qwenTools = [
+        { type: "function", function: { name: "record_booking", description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'", parameters: { type: "object", properties: { status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" }, pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" } }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"] } } },
+        { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of dates in YYYY-MM-DD format for the booking." }, guest_name: { type: "string", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." }, old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." }, search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action", "target_dates"] } } },
+        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
+    ];
+
+    let retries = 3;
+    let response;
+
+    while (retries > 0) {
+        try {
+            response = await axios.post(OLLAMA_API_URL, {
+                model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: 1024
+            }, { headers: { 'Content-Type': 'application/json' } });
+            break; 
+        } catch (e) {
+            console.error(`[Qwen API Error] Retries left: ${retries - 1}`, e.message);
+            retries--;
+            if (retries === 0) return null; 
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+
+    try {
+        if (response.data.choices && response.data.choices.length > 0) {
+            const message = response.data.choices[0].message;
+
+            if (message.tool_calls && message.tool_calls.length > 0) {
+                let newContext = [...extraContext, message];
+
+                for (const toolCall of message.tool_calls) {
+                    const funcName = toolCall.function.name;
+                    let args = {};
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    catch (e) { console.error(`[Qwen JSON Error] ${funcName}:`, e.message); }
+                    
+                    let resultStr = "";
+
+                    if (funcName === "record_booking") {
+                        await handleBookingNotification(args, senderId);
+                        resultStr = "Success";
+                    } else if (funcName === "notify_admin") {
+                        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n\n${args.message}`);
+                            resultStr = "Admin notified successfully.";
+                        } else {
+                            resultStr = "Admin chat not configured.";
+                        }
+                    } else if (funcName === "manage_sheet_booking" || funcName === "search_sheet_booking") {
+                        if (process.env.GOOGLE_SHEET_API_URL) {
+                            try {
+                                const payload = funcName === "search_sheet_booking" ? { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month } : args;
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
+                                resultStr = sheetRes.data.status || "Completed";
+
+                                if (funcName === "manage_sheet_booking" && args.action !== 'SEARCH' && !resultStr.includes('Skipped')) {
+                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                        await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (QWEN)*\n\nAction: ${args.action}\nDate: ${args.target_date}\nText: ${args.new_text || 'N/A'}\n\nStatus: ${resultStr}`);
+                                    }
+                                }
+                            } catch (e) { resultStr = e.message; }
+                        } else { resultStr = "GOOGLE_SHEET_API_URL not set."; }
+                    } else if (funcName === "manage_hotel_booking" || funcName === "search_hotel_booking") {
+                        if (process.env.HOTEL_SHEET_API_URL) {
+                            try {
+                                const payload = funcName === "search_hotel_booking" ? { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month } : args;
+                                const sheetRes = await axios.post(process.env.HOTEL_SHEET_API_URL, payload);
+                                resultStr = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || sheetRes.data.status || "Completed");
+
+                                if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
+                                    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (QWEN)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                    }
+                                }
+                            } catch (e) { resultStr = e.message; }
+                        } else { resultStr = "HOTEL_SHEET_API_URL not set."; }
+                    }
+
+                    newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
+                }
+
+                return await callQwen(senderId, null, newContext, depth + 1, isEmail, platform);
+            }
+
+            if (message.content) {
+                return message.content;
+            }
+        }
+    } catch (e) {
+        console.error("[Qwen Processing Error]", e.message);
+    }
+    return null;
 }
 
 async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp') {
@@ -1054,97 +1254,12 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
     ];
 
     const deepseekTools = [
-        {
-            type: "function",
-            function: {
-                name: "record_booking",
-                description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" },
-                        pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" }
-                    }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"]
-                }
-            }
-        },
-        {
-            type: "function",
-            function: {
-                name: "manage_sheet_booking",
-                description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
-                        target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." },
-                        new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." },
-                        old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
-                        old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." },
-                        search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." },
-                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
-                    }, required: ["action"]
-                }
-            }
-        },
-        {
-            type: "function",
-            function: {
-                name: "search_sheet_booking",
-                description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.",
-                parameters: {
-                    type: "object",
-                    properties: { 
-                        search_query: { type: "string" },
-                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
-                    }, required: ["search_query"]
-                }
-            }
-        },
-        {
-            type: "function",
-            function: {
-                name: "notify_admin",
-                description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
-                parameters: {
-                    type: "object",
-                    properties: { message: { type: "string" } }, required: ["message"]
-                }
-            }
-        },
-        {
-            type: "function",
-            function: {
-                name: "manage_hotel_booking",
-                description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.",
-                parameters: {
-                    type: "object",
-                    properties: {
-                        action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" },
-                        target_dates: { type: "array", items: { type: "string" }, description: "Array of dates in YYYY-MM-DD format for the booking." },
-                        guest_name: { type: "string", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." },
-                        old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." },
-                        search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." },
-                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." }
-                    },
-                    required: ["action", "target_dates"]
-                }
-            }
-        },
-        {
-            type: "function",
-            function: {
-                name: "search_hotel_booking",
-                description: "Search the live Hotel calendar for a customer's booking without modifying it.",
-                parameters: {
-                    type: "object",
-                    properties: { 
-                        search_query: { type: "string" },
-                        target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." }
-                    }, required: ["search_query"]
-                }
-            }
-        }
+        { type: "function", function: { name: "record_booking", description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'", parameters: { type: "object", properties: { status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" }, pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" } }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"] } } },
+        { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, or REMOVE per lifecycle rules.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format (e.g. 2026-07-02). Required for ADD and UPDATE." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage the hotel room calendar. Use SEARCH, ADD, UPDATE, or REMOVE.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', or 'SEARCH'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of dates in YYYY-MM-DD format for the booking." }, guest_name: { type: "string", description: "Name of the guest (and booking source, e.g., 'John Doe (Booking.com)') to write into the room cell." }, old_guest_match: { type: "string", description: "A substring of the old guest name to find and clear. Required for REMOVE." }, search_query: { type: "string", description: "Guest name to search for across the hotel sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action", "target_dates"] } } },
+        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
     ];
 
     let retries = 3;
@@ -1155,20 +1270,16 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
             response = await axios.post('https://api.deepseek.com/chat/completions', {
                 model: 'deepseek-flash', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
             }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-            break; // Success
+            break; 
         } catch (e) {
             console.error(`[DeepSeek API Error] Retries left: ${retries - 1}`, e.message);
             retries--;
-            if (retries === 0) {
-                console.error("[DeepSeek Fatal Error]", e.response ? JSON.stringify(e.response.data) : e.message);
-                return null; // Give up after 3 tries
-            }
-            await new Promise(r => setTimeout(r, 2000)); // Wait 2 seconds before retry
+            if (retries === 0) return null; 
+            await new Promise(r => setTimeout(r, 2000));
         }
     }
 
     try {
-
         if (response.data.choices && response.data.choices.length > 0) {
             const message = response.data.choices[0].message;
 
@@ -1178,11 +1289,8 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
                     let args = {};
-                    try {
-                        args = JSON.parse(toolCall.function.arguments || '{}');
-                    } catch (e) {
-                        console.error(`[DeepSeek JSON Error] ${funcName}:`, e.message);
-                    }
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    catch (e) { console.error(`[DeepSeek JSON Error] ${funcName}:`, e.message); }
                     let resultStr = "";
 
                     if (funcName === "record_booking") {
@@ -1494,9 +1602,6 @@ async function downloadMedia(mediaId, mimeType, senderId) {
         const mediaUrl = metaRes.data.url;
         const actualMimeType = metaRes.data.mime_type || mimeType || "application/octet-stream";
 
-        // 2. Download binary data from the URL
-        // If Dualhook proxies the CDN link, we must use the Dualhook key.
-        // If the URL points straight to Meta (lookaside.fbsbx.com), we must use the original Meta Token.
         const downloadToken = mediaUrl.includes('dualhook.com') ? bearerToken : META_ACCESS_TOKEN;
 
         const downloadRes = await axios.get(mediaUrl, {
@@ -1529,7 +1634,6 @@ async function downloadIGMedia(mediaUrl) {
 }
 
 async function analyzeMedia(buffer, mimeType, caption, mediaType) {
-    // 1. Parse Excel files directly
     if (mimeType.includes('spreadsheetml') || mimeType.includes('excel') || mimeType === 'text/csv') {
         try {
             const workbook = xlsx.read(buffer, { type: 'buffer' });
@@ -1545,7 +1649,6 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
         }
     }
 
-    // 2. Parse Word Documents
     if (mimeType.includes('wordprocessingml') || mimeType === 'application/msword') {
         try {
             const result = await mammoth.extractRawText({ buffer: buffer });
@@ -1555,7 +1658,6 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
         }
     }
 
-    // 3. For natively supported Gemini formats (Audio, PDF, Images)
     let prompt = "";
     if (mediaType === 'audio') {
         prompt = "Please listen to this audio message from a customer and transcribe/summarize what they said in detail.";
@@ -1619,11 +1721,11 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
                 cacheSet(response.data.messages[0].id, "true", 300);
             }
             console.log(`[Sent] Message to ${recipientPhone}`);
-            return; // Success, exit loop
+            return; 
         } catch (error) {
             console.error(`WhatsApp Send Error (Attempt ${attempt}/3):`, error.response ? error.response.data : error.message);
-            if (attempt === 3) return; // Give up after 3 tries
-            await new Promise(r => setTimeout(r, 2000)); // Wait 2s before retry
+            if (attempt === 3) return; 
+            await new Promise(r => setTimeout(r, 2000)); 
         }
     }
 }
@@ -1733,13 +1835,12 @@ Output NOTHING ELSE except "YES" or "NO". Default to "NO" if you are unsure.`;
     } catch (error) {
         console.error("Gemini Followup Eval Error:", error.message);
     }
-    return false; // Default to safe (don't spam)
+    return false; 
 }
 
 async function runDailyFollowUps() {
     console.log("[Cron] Running daily follow-up checks...");
 
-    // Only fetch messages from the last 10 days to stay well under the 1000 row limit
     const tenDaysAgo = new Date();
     tenDaysAgo.setDate(tenDaysAgo.getDate() - 10);
 
@@ -1751,7 +1852,6 @@ async function runDailyFollowUps() {
 
     if (error || !convos) return;
 
-    // Group by phone number to find the LATEST message for each
     const latestMessages = new Map();
     for (const msg of convos) {
         if (!latestMessages.has(msg.phone_number)) {
@@ -1765,7 +1865,6 @@ async function runDailyFollowUps() {
         const lastTime = new Date(lastMsg.created_at);
         const hoursSilent = (now - lastTime) / (1000 * 60 * 60);
 
-        // Check 2-day follow up (between 48 and 72 hours)
         if (hoursSilent >= 48 && hoursSilent < 72) {
             if (lastMsg.message_text.includes("reconfirm your dive plan") || lastMsg.message_text.includes("[Sent 2-Day Follow-Up Template]")) continue;
 
@@ -1776,13 +1875,10 @@ async function runDailyFollowUps() {
                 await sendWhatsAppTemplate(phone, "sales_followup", "en");
                 await appendHistory(phone, "model", "[Sent 2-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 2-day follow up to ${phone}`);
-
-                // Wait 5 seconds between messages so Meta doesn't flag us for spam
                 await sleep(5000);
             }
         }
 
-        // Check 7-day follow up (between 168 and 192 hours)
         else if (hoursSilent >= 168 && hoursSilent < 192) {
             if (lastMsg.message_text.includes("checking in one last time") || lastMsg.message_text.includes("[Sent 7-Day Follow-Up Template]")) continue;
 
@@ -1793,7 +1889,6 @@ async function runDailyFollowUps() {
                 await sendWhatsAppTemplate(phone, "sales_followup", "en");
                 await appendHistory(phone, "model", "[Sent 7-Day Follow-Up Template]");
                 console.log(`[Follow-up] Sent 7-day follow up to ${phone}`);
-
                 await sleep(5000);
             }
         }
@@ -1812,11 +1907,10 @@ app.post('/gmail-webhook', async (req, res) => {
         const senderEmailLower = senderEmail.toLowerCase();
         const subjectLower = subject.toLowerCase();
 
-        // HARD-CODED SPAM & SYSTEM FILTER (Bypasses AI completely)
         if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) &&
             !senderEmailLower.includes('viator') &&
             !senderEmailLower.includes('bokun') &&
-            !senderEmailLower.includes('getyourguide') // Good measure for tours
+            !senderEmailLower.includes('getyourguide') 
         ) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
@@ -1824,7 +1918,6 @@ app.post('/gmail-webhook', async (req, res) => {
 
         let contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
 
-        // Handle Email Attachments (like payment screenshots)
         if (attachments && attachments.length > 0) {
             for (const att of attachments) {
                 try {
@@ -1839,7 +1932,6 @@ app.post('/gmail-webhook', async (req, res) => {
             }
         }
 
-        // 1. Check Pause State
         const isPaused = await checkIsPaused(senderEmail);
 
         if (isPaused) {
@@ -1847,11 +1939,17 @@ app.post('/gmail-webhook', async (req, res) => {
             return res.json({ action: "PAUSED" });
         }
 
-        // 2. Append history and call AI
         await appendHistory(senderEmail, "user", contextToSave);
+        
+        // GMAIL FALLBACK LOGIC
         let aiReply;
-        if (ACTIVE_AI === 'deepseek') {
+        if (ACTIVE_AI === 'qwen') {
+            aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+            if (!aiReply) aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
+        } else if (ACTIVE_AI === 'deepseek') {
             aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         } else {
             aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         }
@@ -1862,7 +1960,6 @@ app.post('/gmail-webhook', async (req, res) => {
                 return res.json({ action: "IGNORED" });
             }
 
-            // It's a real reply, tell Apps Script to create a draft
             console.log(`[Gmail] Creating draft for ${senderEmail}`);
             return res.json({ action: "DRAFT_CREATED", replyText: aiReply });
         }
@@ -1874,9 +1971,9 @@ app.post('/gmail-webhook', async (req, res) => {
     }
 });
 
-// Run every day at 10:00 AM server time
 // cron.schedule('0 10 * * *', runDailyFollowUps);
 
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
+
