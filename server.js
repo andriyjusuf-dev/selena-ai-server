@@ -1949,12 +1949,13 @@ app.post('/gmail-webhook', async (req, res) => {
         
         // GMAIL FALLBACK LOGIC
         let aiReply;
-        if (ACTIVE_AI === 'qwen') {
+        if (ACTIVE_AI === 'deepseek') {
+            aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+            if (!aiReply) aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
+        } else if (ACTIVE_AI === 'qwen') {
             aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
             if (!aiReply) aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
-            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
-        } else if (ACTIVE_AI === 'deepseek') {
-            aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
             if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         } else {
             aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
@@ -1982,3 +1983,4 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
+
