@@ -27,8 +27,8 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 // NEW: Qwen Ngrok API URL
 const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://127.0.0.1:11434/v1/chat/completions';
-// Set Default AI to Qwen
-let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'qwen';
+// Set Default AI to DeepSeek
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -701,7 +701,17 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                             
                             let geminiReply;
-                            if (ACTIVE_AI === 'qwen') {
+                            if (ACTIVE_AI === 'deepseek') {
+                                geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
+                                if (!geminiReply) {
+                                    console.error(`[AI Fallback] DeepSeek failed. Falling back to Qwen...`);
+                                    geminiReply = await callQwen(senderId, null, [], 0, false, 'whatsapp');
+                                    if (!geminiReply) {
+                                        console.error(`[AI Fallback] Qwen failed to respond for ${senderId}. Falling back to Gemini...`);
+                                        geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
+                                    }
+                                }
+                            } else if (ACTIVE_AI === 'qwen') {
                                 geminiReply = await callQwen(senderId, null, [], 0, false, 'whatsapp');
                                 if (!geminiReply) {
                                     console.error(`[AI Fallback] Qwen failed. Falling back to DeepSeek...`);
@@ -710,12 +720,6 @@ async function processWebhook(data) {
                                         console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
                                         geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                                     }
-                                }
-                            } else if (ACTIVE_AI === 'deepseek') {
-                                geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
-                                if (!geminiReply) {
-                                    console.error(`[AI Fallback] DeepSeek failed to respond for ${senderId}. Falling back to Gemini...`);
-                                    geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                                 }
                             } else {
                                 geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
@@ -800,17 +804,18 @@ async function handleInstagramMessagingEvent(messagingEvent) {
                 await appendHistory(senderId, "user", contextToSave);
 
                 let aiReply;
-                if (ACTIVE_AI === 'qwen') {
+                if (ACTIVE_AI === 'deepseek') {
                     const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
-                    aiReply = await callQwen(senderId, null, extraContext, 0, false, 'instagram');
-                    if (!aiReply) aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                    aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                    if (!aiReply) aiReply = await callQwen(senderId, null, extraContext, 0, false, 'instagram');
                     if (!aiReply) {
                         const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
                         aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
                     }
-                } else if (ACTIVE_AI === 'deepseek') {
+                } else if (ACTIVE_AI === 'qwen') {
                     const extraContext = [{ role: "user", content: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }];
-                    aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
+                    aiReply = await callQwen(senderId, null, extraContext, 0, false, 'instagram');
+                    if (!aiReply) aiReply = await callDeepSeek(senderId, null, extraContext, 0, false, 'instagram');
                     if (!aiReply) {
                         const geminiCtx = [{ role: "user", parts: [{ text: "Someone just mentioned us in their Instagram story! Reply warmly, thank them for the mention, and be enthusiastic with a nice emoji. Keep it very short (one sentence). Do NOT try to sell anything or offer any bookings. Just say thank you!" }] }];
                         aiReply = await callGemini(senderId, geminiCtx, "gemini-3.8-flash", false, 0, 'instagram');
@@ -850,12 +855,13 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             await appendHistory(senderId, "user", contextToSave);
             
             let aiReply;
-            if (ACTIVE_AI === 'qwen') {
+            if (ACTIVE_AI === 'deepseek') {
+                aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
+                if (!aiReply) aiReply = await callQwen(senderId, null, [], 0, false, 'instagram');
+                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
+            } else if (ACTIVE_AI === 'qwen') {
                 aiReply = await callQwen(senderId, null, [], 0, false, 'instagram');
                 if (!aiReply) aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
-                if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
-            } else if (ACTIVE_AI === 'deepseek') {
-                aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
                 if (!aiReply) aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             } else {
                 aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
@@ -1976,4 +1982,3 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
-
