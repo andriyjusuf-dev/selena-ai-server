@@ -1239,7 +1239,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
 }
 
 async function callDeepSeek(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp') {
-    if (depth > 5) {
+    if (depth > 10) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
     }
