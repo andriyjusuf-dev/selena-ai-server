@@ -284,10 +284,7 @@ async function callDeepSeekTelegram(text) {
                 message = response.data.choices[0].message;
             }
 
-            if (message.content !== undefined && message.content !== null) {
-                if (message.content.trim().length > 0) {
-                    await appendHistory(senderId, "model", message.content);
-                }
+            if (message.content) {
                 return message.content;
             }
         }
@@ -1363,7 +1360,10 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 return await callDeepSeek(senderId, null, newContext, depth + 1, isEmail, platform);
             }
 
-            if (message.content) {
+            if (message.content !== undefined && message.content !== null) {
+                if (message.content.trim().length > 0) {
+                    await appendHistory(senderId, "model", message.content);
+                }
                 return message.content;
             }
         }
