@@ -1,3 +1,4 @@
+```javascript
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -665,7 +666,7 @@ async function processWebhook(data) {
                     } else {
                         const senderId = messageObj.from;
                         if (!senderId) {
-                            console.error(, JSON.stringify(messageObj));
+                            console.error("[Warning] Could not extract customer ID! Ignoring. Payload:", JSON.stringify(messageObj));
                             return;
                         }
 
@@ -1995,3 +1996,4 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
+```
