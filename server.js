@@ -664,6 +664,10 @@ async function processWebhook(data) {
                         }
                     } else {
                         const senderId = messageObj.from;
+                        if (!senderId) {
+                            console.error(, JSON.stringify(messageObj));
+                            return;
+                        }
 
                         if (!isMedia && ADMIN_NUMBERS.includes(senderId) && (textBody.toLowerCase().startsWith('!learn') || textBody.toLowerCase().startsWith('!rule'))) {
                             await handleAdminCommand(senderId, textBody);
