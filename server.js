@@ -284,7 +284,10 @@ async function callDeepSeekTelegram(text) {
                 message = response.data.choices[0].message;
             }
 
-            if (message.content) {
+            if (message.content !== undefined && message.content !== null) {
+                if (message.content.trim().length > 0) {
+                    await appendHistory(senderId, "model", message.content);
+                }
                 return message.content;
             }
         }
@@ -1232,7 +1235,10 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                 return await callQwen(senderId, null, newContext, depth + 1, isEmail, platform);
             }
 
-            if (message.content) {
+            if (message.content !== undefined && message.content !== null) {
+                if (message.content.trim().length > 0) {
+                    await appendHistory(senderId, "model", message.content);
+                }
                 return message.content;
             }
         }
@@ -1376,6 +1382,11 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
     let history = await getHistory(senderId);
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
+    }
+    
+    // Prevent Gemini crash if concurrent webhooks messed up the order
+    if (history.length > 0 && history[history.length - 1].role === 'model') {
+        history.push({ role: "user", parts: [{ text: "..." }] });
     }
     const systemPrompt = await buildSystemPrompt(isEmail, platform);
 
