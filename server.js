@@ -1,4 +1,3 @@
-```javascript
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -1996,4 +1995,3 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
-```
