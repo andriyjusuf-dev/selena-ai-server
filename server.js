@@ -30,6 +30,14 @@ const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://127.0.0.1:11434/v1/
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.error("🚨 FATAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing in Render Environment Variables!");
+    process.exit(1);
+}
+if (ACTIVE_AI === 'qwen' && !process.env.OLLAMA_API_URL) {
+    console.error("⚠️ WARNING: Qwen is active but OLLAMA_API_URL is missing. It will default to localhost which will fail on Render.");
+}
+
 // Initialize Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -1983,4 +1991,3 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
-
