@@ -1,3 +1,4 @@
+```javascript
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -1492,6 +1493,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
             const content = response.data.candidates[0].content;
             if (!content || !content.parts) {
                 console.error("[Gemini] API returned empty content (Safety Filter). Ignoring.");
+                console.log(`[Gemini AI Debug] Raw response:`, JSON.stringify(response.data));
                 return null;
             }
             const parts = content.parts;
@@ -2006,3 +2008,4 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
+```
