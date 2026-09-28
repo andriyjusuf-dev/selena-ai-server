@@ -505,8 +505,30 @@ app.get('/instagram-webhook', (req, res) => {
 });
 
 // ==========================================
-// 1.5 KIOSK API (Web Interface)
+// 1.5 KIOSK & QWEN TEST API (Web Interface)
 // ==========================================
+app.post('/qwen-test', async (req, res) => {
+    try {
+        const { messages, temperature } = req.body;
+        
+        const qwenRes = await axios.post(OLLAMA_API_URL, {
+            model: 'qwen3.6:35b-a3b',
+            messages: messages || [],
+            temperature: temperature || 0.7
+        }, {
+            headers: { 
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true' // Render bypasses the warning safely!
+            }
+        });
+        
+        return res.json(qwenRes.data);
+    } catch (e) {
+        console.error("Qwen Test Proxy Error", e.message);
+        return res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/kiosk-chat', async (req, res) => {
     const { text, language } = req.body;
     if (!text) return res.status(400).send("No text provided");
@@ -2007,3 +2029,4 @@ app.post('/gmail-webhook', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
 });
+
