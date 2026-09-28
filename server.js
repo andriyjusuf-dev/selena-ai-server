@@ -26,7 +26,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 // NEW: Qwen Ngrok API URL
-const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'http://127.0.0.1:11434/v1/chat/completions';
+const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'https://unlearned-propose-escargot.ngrok-free.dev/v1/chat/completions';
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
