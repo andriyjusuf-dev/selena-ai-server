@@ -26,7 +26,10 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 // NEW: Qwen Ngrok API URL
-const OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'https://unlearned-propose-escargot.ngrok-free.dev/v1/chat/completions';
+let OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'https://unlearned-propose-escargot.ngrok-free.dev/v1/chat/completions';
+if (OLLAMA_API_URL && !OLLAMA_API_URL.endsWith('/v1/chat/completions')) {
+    OLLAMA_API_URL = OLLAMA_API_URL.replace(/\/+$/, '') + '/v1/chat/completions';
+}
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
@@ -203,7 +206,7 @@ async function callQwenTelegram(text) {
     try {
         let response = await axios.post(OLLAMA_API_URL, {
             model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
-        }, { headers: { 'Content-Type': 'application/json' } });
+        }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
 
         if (response.data.choices && response.data.choices.length > 0) {
             let message = response.data.choices[0].message;
@@ -222,7 +225,7 @@ async function callQwenTelegram(text) {
 
                 response = await axios.post(OLLAMA_API_URL, {
                     model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
-                }, { headers: { 'Content-Type': 'application/json' } });
+                }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
 
                 message = response.data.choices[0].message;
             }
@@ -935,7 +938,7 @@ async function generateCommentReply(commentText) {
             const response = await axios.post(OLLAMA_API_URL, {
                 model: 'qwen3.6:35b-a3b',
                 messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
-            }, { headers: { 'Content-Type': 'application/json' } });
+            }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
             if (response.data.choices && response.data.choices.length > 0) return response.data.choices[0].message.content;
         } catch (error) { console.error("Qwen Comment Reply Error:", error.message); }
     } else if (ACTIVE_AI === 'deepseek') {
@@ -1183,7 +1186,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         try {
             response = await axios.post(OLLAMA_API_URL, {
                 model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: 1024
-            }, { headers: { 'Content-Type': 'application/json' } });
+            }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
             break; 
         } catch (e) {
             console.error(`[Qwen API Error] Retries left: ${retries - 1}`, e.message);
