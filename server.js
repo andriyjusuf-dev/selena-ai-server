@@ -25,11 +25,12 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// NEW: Qwen Ngrok API URL
-let OLLAMA_API_URL = process.env.OLLAMA_API_URL || 'https://unlearned-propose-escargot.ngrok-free.dev/v1/chat/completions';
+// NEW: Qwen API URL (Cloudflare or Ngrok fallback)
+let OLLAMA_API_URL = process.env.OLLAMA_API_URL || process.env.NGROK_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
 if (OLLAMA_API_URL && !OLLAMA_API_URL.endsWith('/v1/chat/completions')) {
     OLLAMA_API_URL = OLLAMA_API_URL.replace(/\/+$/, '') + '/v1/chat/completions';
 }
+
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
@@ -37,8 +38,8 @@ if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
     console.error("🚨 FATAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing in Render Environment Variables!");
     process.exit(1);
 }
-if (ACTIVE_AI === 'qwen' && !process.env.OLLAMA_API_URL) {
-    console.error("⚠️ WARNING: Qwen is active but OLLAMA_API_URL is missing. It will default to localhost which will fail on Render.");
+if (ACTIVE_AI === 'qwen' && !process.env.OLLAMA_API_URL && !process.env.NGROK_API_URL) {
+    console.error("⚠️ WARNING: Qwen is active but OLLAMA_API_URL/NGROK_API_URL is missing.");
 }
 
 // Initialize Supabase
@@ -2027,7 +2028,7 @@ app.post('/gmail-webhook', async (req, res) => {
     }
 });
 
-// cron.schedule('0 10 * * *', runDailyFollowUps);
+cron.schedule('0 10 * * *', runDailyFollowUps);
 
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
