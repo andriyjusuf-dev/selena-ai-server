@@ -30,8 +30,8 @@ const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const QWEN_API_URL = process.env.QWEN_API_URL || 'https://maas.qwencloudapi.com/compatible-mode/v1/chat/completions';
 const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash'; 
 
-// Set Default AI to Qwen
-let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'qwen';
+// Set Default AI to DeepSeek
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
     console.error("🚨 FATAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing in Render Environment Variables!");
