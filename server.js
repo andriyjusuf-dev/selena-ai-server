@@ -25,21 +25,20 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// NEW: Qwen API URL (Cloudflare or Ngrok fallback)
-let OLLAMA_API_URL = process.env.OLLAMA_API_URL || process.env.NGROK_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
-if (OLLAMA_API_URL && !OLLAMA_API_URL.endsWith('/v1/chat/completions')) {
-    OLLAMA_API_URL = OLLAMA_API_URL.replace(/\/+$/, '') + '/v1/chat/completions';
-}
+// NEW: Qwen Cloud API Configuration
+const QWEN_API_KEY = process.env.QWEN_API_KEY;
+const QWEN_API_URL = process.env.QWEN_API_URL || 'https://maas.qwencloudapi.com/compatible-mode/v1/chat/completions';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash'; 
 
-// Set Default AI to DeepSeek
-let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
+// Set Default AI to Qwen
+let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'qwen';
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
     console.error("🚨 FATAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing in Render Environment Variables!");
     process.exit(1);
 }
-if (ACTIVE_AI === 'qwen' && !process.env.OLLAMA_API_URL && !process.env.NGROK_API_URL) {
-    console.error("⚠️ WARNING: Qwen is active but OLLAMA_API_URL/NGROK_API_URL is missing.");
+if (ACTIVE_AI === 'qwen' && !QWEN_API_KEY) {
+    console.error("⚠️ WARNING: Qwen is active but QWEN_API_KEY is missing.");
 }
 
 // Initialize Supabase
@@ -150,9 +149,13 @@ async function executeTelegramTool(funcName, args) {
         if (ACTIVE_AI === 'qwen') {
             const qwenContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
             botReply = await callQwen(args.phone_number, null, qwenContext);
+            if (!botReply) botReply = await callDeepSeek(args.phone_number, null, qwenContext);
+            if (!botReply) botReply = await callGemini(args.phone_number, [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }]);
         } else if (ACTIVE_AI === 'deepseek') {
             const deepseekContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
             botReply = await callDeepSeek(args.phone_number, null, deepseekContext);
+            if (!botReply) botReply = await callQwen(args.phone_number, null, deepseekContext);
+            if (!botReply) botReply = await callGemini(args.phone_number, [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }]);
         } else {
             const extraContext = [{ role: 'user', parts: [{ text: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }] }];
             botReply = await callGemini(args.phone_number, extraContext);
@@ -205,9 +208,9 @@ async function callQwenTelegram(text) {
     ];
 
     try {
-        let response = await axios.post(OLLAMA_API_URL, {
-            model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
-        }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
+        let response = await axios.post(QWEN_API_URL, {
+            model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7
+        }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
 
         if (response.data.choices && response.data.choices.length > 0) {
             let message = response.data.choices[0].message;
@@ -224,9 +227,9 @@ async function callQwenTelegram(text) {
                     messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResult) });
                 }
 
-                response = await axios.post(OLLAMA_API_URL, {
-                    model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTelegramTools, temperature: 0.7
-                }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
+                response = await axios.post(QWEN_API_URL, {
+                    model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7
+                }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
 
                 message = response.data.choices[0].message;
             }
@@ -436,7 +439,9 @@ app.post('/telegram-webhook', async (req, res) => {
         const chatId = update.message.chat.id.toString();
         const text = update.message.text;
 
-        if (chatId === TELEGRAM_CHAT_ID || update.message.chat.type === 'private') {
+        // SECURITY FIX: Only allow the authorized group chat OR the authorized personal admin chat
+        const allowedPrivateChat = process.env.PERSONAL_TELEGRAM_CHAT_ID || TELEGRAM_CHAT_ID;
+        if (chatId === TELEGRAM_CHAT_ID || chatId === allowedPrivateChat) {
             const isMentioned = text.includes('@SelenaSanctumBot');
             const isPrivate = update.message.chat.type === 'private';
 
@@ -512,17 +517,23 @@ app.get('/instagram-webhook', (req, res) => {
 // 1.5 KIOSK & QWEN TEST API (Web Interface)
 // ==========================================
 app.post('/qwen-test', async (req, res) => {
+    // SECURITY FIX: Prevent unauthorized users from burning your API credits
+    const authHeader = req.headers.authorization;
+    if (authHeader !== `Bearer ${META_VERIFY_TOKEN}`) {
+        return res.status(403).json({ error: "Forbidden: Invalid or missing token" });
+    }
+
     try {
         const { messages, temperature } = req.body;
         
-        const qwenRes = await axios.post(OLLAMA_API_URL, {
-            model: 'qwen3.6:35b-a3b',
+        const qwenRes = await axios.post(QWEN_API_URL, {
+            model: QWEN_MODEL,
             messages: messages || [],
             temperature: temperature || 0.7
         }, {
             headers: { 
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': 'true' // Render bypasses the warning safely!
+                'Authorization': `Bearer ${QWEN_API_KEY}`
             }
         });
         
@@ -936,10 +947,10 @@ async function generateCommentReply(commentText) {
 
     if (ACTIVE_AI === 'qwen') {
         try {
-            const response = await axios.post(OLLAMA_API_URL, {
-                model: 'qwen3.6:35b-a3b',
+            const response = await axios.post(QWEN_API_URL, {
+                model: QWEN_MODEL,
                 messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
-            }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
+            }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
             if (response.data.choices && response.data.choices.length > 0) return response.data.choices[0].message.content;
         } catch (error) { console.error("Qwen Comment Reply Error:", error.message); }
     } else if (ACTIVE_AI === 'deepseek') {
@@ -1185,9 +1196,9 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
 
     while (retries > 0) {
         try {
-            response = await axios.post(OLLAMA_API_URL, {
-                model: 'qwen3.6:35b-a3b', messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: 1024
-            }, { headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' } });
+            response = await axios.post(QWEN_API_URL, {
+                model: QWEN_MODEL, messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: 1024
+            }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
             break; 
         } catch (e) {
             console.error(`[Qwen API Error] Retries left: ${retries - 1}`, e.message);
