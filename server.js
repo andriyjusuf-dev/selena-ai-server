@@ -700,7 +700,7 @@ async function processWebhook(data) {
                             }
                         }
                     } else {
-                        const senderId = messageObj.from;
+                        const senderId = messageObj.from || messageObj.from_user_id;
                         if (!senderId) {
                             console.error("[Warning] Could not extract customer ID! Ignoring. Payload:", JSON.stringify(messageObj));
                             return;
