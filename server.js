@@ -1978,8 +1978,8 @@ app.post('/gmail-webhook', async (req, res) => {
 
         console.log(`[Gmail] Received email from ${senderEmail}: ${subject}`);
 
-        const senderEmailLower = senderEmail.toLowerCase();
-        const subjectLower = subject.toLowerCase();
+        const senderEmailLower = (senderEmail || "").toLowerCase();
+        const subjectLower = (subject || "").toLowerCase();
 
         if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply')) &&
             !senderEmailLower.includes('viator') &&
@@ -2031,7 +2031,7 @@ app.post('/gmail-webhook', async (req, res) => {
         }
 
         if (aiReply) {
-            if (aiReply.match(/IGNORE/i)) {
+            if (/^IGNORE[\s.!\n]*$/i.test(aiReply.trim())) {
                 console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
                 return res.json({ action: "IGNORED" });
             }
@@ -2047,7 +2047,7 @@ app.post('/gmail-webhook', async (req, res) => {
     }
 });
 
-cron.schedule('0 10 * * *', runDailyFollowUps);
+// cron.schedule('0 10 * * *', runDailyFollowUps); // DISABLED: Automatic follow-ups disabled
 
 app.listen(PORT, () => {
     console.log(`Sanctum AI Server is running on port ${PORT}`);
