@@ -2016,17 +2016,14 @@ app.post('/gmail-webhook', async (req, res) => {
 
         await appendHistory(senderEmail, "user", contextToSave);
         
-        // GMAIL FALLBACK LOGIC
-        let aiReply;
-        if (ACTIVE_AI === 'deepseek') {
+        // GMAIL AI BRAIN: Qwen is primary, DeepSeek is fallback, Gemini as safety net
+        let aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+        if (!aiReply) {
+            console.log(`[Gmail Fallback] Qwen failed for ${senderEmail}. Falling back to DeepSeek...`);
             aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
-            if (!aiReply) aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
-            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
-        } else if (ACTIVE_AI === 'qwen') {
-            aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
-            if (!aiReply) aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
-            if (!aiReply) aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
-        } else {
+        }
+        if (!aiReply) {
+            console.log(`[Gmail Fallback] DeepSeek failed for ${senderEmail}. Falling back to Gemini...`);
             aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         }
 
