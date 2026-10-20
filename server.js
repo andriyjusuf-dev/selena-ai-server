@@ -19,7 +19,7 @@ const META_IG_VERIFY_TOKEN = process.env.META_IG_VERIFY_TOKEN || process.env.MET
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_IG_ACCESS_TOKEN = process.env.META_IG_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
-const META_IG_USER_ID = process.env.META_IG_USER_ID; 
+const META_IG_USER_ID = process.env.META_IG_USER_ID;
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -28,7 +28,7 @@ const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 // NEW: Qwen Cloud API Configuration
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const QWEN_API_URL = process.env.QWEN_API_URL || 'https://maas.qwencloudapi.com/compatible-mode/v1/chat/completions';
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash'; 
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash';
 
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
@@ -100,7 +100,7 @@ const originalConsoleError = console.error;
 console.error = function (...args) {
     const errorStr = args.map(a => typeof a === 'object' ? JSON.stringify(a) : a).join(' ');
     if (!errorStr.includes('Telegram Error:')) {
-        sendErrorTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(()=>{});
+        sendErrorTelegramAlert(`🔥 *Render Server Error Log*\n\n\`${errorStr.substring(0, 800)}\``).catch(() => { });
     }
     originalConsoleError.apply(console, args);
 };
@@ -221,7 +221,7 @@ async function callQwenTelegram(text) {
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
                     let args = {};
-                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); }
                     catch (e) { console.error(`[Qwen JSON Error] ${funcName}:`, e.message); }
                     const toolResult = await executeTelegramTool(funcName, args);
                     messages.push({ role: "tool", tool_call_id: toolCall.id, content: JSON.stringify(toolResult) });
@@ -407,8 +407,8 @@ async function callGeminiTelegram(text) {
                         system_instruction: { parts: [{ text: telegramPrompt }] },
                         contents: [
                             { role: "user", parts: [{ text: text }] },
-                            response.data.candidates[0].content, 
-                            funcResCtx 
+                            response.data.candidates[0].content,
+                            funcResCtx
                         ]
                     };
 
@@ -525,18 +525,18 @@ app.post('/qwen-test', async (req, res) => {
 
     try {
         const { messages, temperature } = req.body;
-        
+
         const qwenRes = await axios.post(QWEN_API_URL, {
             model: QWEN_MODEL,
             messages: messages || [],
             temperature: temperature || 0.7
         }, {
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${QWEN_API_KEY}`
             }
         });
-        
+
         return res.json(qwenRes.data);
     } catch (e) {
         console.error("Qwen Test Proxy Error", e.message);
@@ -661,7 +661,7 @@ async function processWebhook(data) {
                         mediaType = 'audio';
                         mediaId = messageObj.audio.id;
                         mimeType = messageObj.audio.mime_type;
-                        textBody = ""; 
+                        textBody = "";
                     } else if (messageObj.type === 'document') {
                         isMedia = true;
                         mediaType = 'document';
@@ -748,7 +748,7 @@ async function processWebhook(data) {
                             await appendHistory(senderId, "user", contextToSave);
                         } else {
                             await appendHistory(senderId, "user", contextToSave);
-                            
+
                             let geminiReply;
                             if (ACTIVE_AI === 'deepseek') {
                                 geminiReply = await callDeepSeek(senderId, null, [], 0, false, 'whatsapp');
@@ -773,7 +773,7 @@ async function processWebhook(data) {
                             } else {
                                 geminiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'whatsapp');
                             }
-                            
+
                             if (geminiReply) {
                                 if (geminiReply.match(/IGNORE/i)) return;
                                 const delayMs = Math.min(2000 + (geminiReply.length * 30), 12000);
@@ -902,7 +902,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             await appendHistory(senderId, "user", contextToSave);
         } else {
             await appendHistory(senderId, "user", contextToSave);
-            
+
             let aiReply;
             if (ACTIVE_AI === 'deepseek') {
                 aiReply = await callDeepSeek(senderId, null, [], 0, false, 'instagram');
@@ -915,7 +915,7 @@ async function handleInstagramMessagingEvent(messagingEvent) {
             } else {
                 aiReply = await callGemini(senderId, [], "gemini-3.8-flash", false, 0, 'instagram');
             }
-            
+
             if (aiReply) {
                 if (aiReply.match(/IGNORE/i)) return;
                 const delayMs = Math.min(2000 + (aiReply.length * 30), 12000);
@@ -1166,7 +1166,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         return "IGNORE";
     }
 
-    let history = await getDeepSeekHistory(senderId); 
+    let history = await getDeepSeekHistory(senderId);
     let latestUserMessage = "Please respond to the ongoing conversation or tool results.";
 
     if (userMessage) {
@@ -1204,13 +1204,13 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
     while (retries > 0) {
         try {
             response = await axios.post(QWEN_API_URL, {
-                model: QWEN_MODEL, messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: 1024
+                model: QWEN_MODEL, messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: isEmail ? 2500 : 1024
             }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
-            break; 
+            break;
         } catch (e) {
             console.error(`[Qwen API Error] Retries left: ${retries - 1}`, e.message);
             retries--;
-            if (retries === 0) return null; 
+            if (retries === 0) return null;
             await new Promise(r => setTimeout(r, 2000));
         }
     }
@@ -1225,9 +1225,9 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
                     let args = {};
-                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); }
                     catch (e) { console.error(`[Qwen JSON Error] ${funcName}:`, e.message); }
-                    
+
                     let resultStr = "";
 
                     if (funcName === "record_booking") {
@@ -1333,13 +1333,13 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
     while (retries > 0) {
         try {
             response = await axios.post('https://api.deepseek.com/chat/completions', {
-                model: 'deepseek-flash', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: 1024
+                model: 'deepseek-flash', messages: messages, tools: deepseekTools, temperature: 0.7, max_tokens: isEmail ? 2500 : 1024
             }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-            break; 
+            break;
         } catch (e) {
             console.error(`[DeepSeek API Error] Retries left: ${retries - 1}`, e.message);
             retries--;
-            if (retries === 0) return null; 
+            if (retries === 0) return null;
             await new Promise(r => setTimeout(r, 2000));
         }
     }
@@ -1354,7 +1354,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                 for (const toolCall of message.tool_calls) {
                     const funcName = toolCall.function.name;
                     let args = {};
-                    try { args = JSON.parse(toolCall.function.arguments || '{}'); } 
+                    try { args = JSON.parse(toolCall.function.arguments || '{}'); }
                     catch (e) { console.error(`[DeepSeek JSON Error] ${funcName}:`, e.message); }
                     let resultStr = "";
 
@@ -1427,7 +1427,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
     if (extraContext.length > 0) {
         history = history.concat(extraContext);
     }
-    
+
     // Prevent Gemini crash if concurrent webhooks messed up the order
     if (history.length > 0 && history[history.length - 1].role === 'model') {
         history.push({ role: "user", parts: [{ text: "..." }] });
@@ -1795,11 +1795,11 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
                 cacheSet(response.data.messages[0].id, "true", 300);
             }
             console.log(`[Sent] Message to ${recipientPhone}`);
-            return; 
+            return;
         } catch (error) {
             console.error(`WhatsApp Send Error (Attempt ${attempt}/3):`, error.response ? error.response.data : error.message);
-            if (attempt === 3) return; 
-            await new Promise(r => setTimeout(r, 2000)); 
+            if (attempt === 3) return;
+            await new Promise(r => setTimeout(r, 2000));
         }
     }
 }
@@ -1909,7 +1909,7 @@ Output NOTHING ELSE except "YES" or "NO". Default to "NO" if you are unsure.`;
     } catch (error) {
         console.error("Gemini Followup Eval Error:", error.message);
     }
-    return false; 
+    return false;
 }
 
 async function runDailyFollowUps() {
@@ -1985,7 +1985,7 @@ app.post('/gmail-webhook', async (req, res) => {
             !senderEmailLower.includes('viator') &&
             !senderEmailLower.includes('bokun') &&
             !senderEmailLower.includes('trip') &&
-            !senderEmailLower.includes('getyourguide') 
+            !senderEmailLower.includes('getyourguide')
         ) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
@@ -2015,7 +2015,7 @@ app.post('/gmail-webhook', async (req, res) => {
         }
 
         await appendHistory(senderEmail, "user", contextToSave);
-        
+
         // GMAIL AI BRAIN: Qwen is primary, DeepSeek is fallback, Gemini as safety net
         let aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
         if (!aiReply) {
