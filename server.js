@@ -127,24 +127,37 @@ async function executeTelegramTool(funcName, args) {
         return { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." };
     } else if (funcName === 'pause_customer') {
         console.log(`[Telegram Tool] AI is running pause_customer for: ${args.phone_number} duration: ${args.duration_minutes}m`);
+        const strId = args.phone_number ? args.phone_number.toString().trim() : '';
+        const cleanId = strId.replace(/\D/g, '');
         const pausedUntil = new Date();
         pausedUntil.setMinutes(pausedUntil.getMinutes() + (args.duration_minutes || 60));
 
-        const { error } = await supabase.from('pause_state').upsert({
-            phone_number: args.phone_number,
-            paused_until: pausedUntil.toISOString()
-        }, { onConflict: 'phone_number' });
+        const records = [{ phone_number: strId, paused_until: pausedUntil.toISOString() }];
+        if (cleanId && cleanId !== strId) {
+            records.push({ phone_number: cleanId, paused_until: pausedUntil.toISOString() });
+        }
+
+        const { error } = await supabase.from('pause_state').upsert(records, { onConflict: 'phone_number' });
 
         if (error) console.error("[Supabase Error] pause_customer failed:", error.message);
         return { status: error ? "failed" : "success", message: error ? error.message : `Customer paused for ${args.duration_minutes || 60} minutes.` };
     } else if (funcName === 'unpause_customer') {
         console.log(`[Telegram Tool] AI is running unpause_customer for: ${args.phone_number}`);
-        const { error } = await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
+        const strId = args.phone_number ? args.phone_number.toString().trim() : '';
+        const cleanId = strId.replace(/\D/g, '');
+        const idsToDelete = [strId];
+        if (cleanId && cleanId !== strId) idsToDelete.push(cleanId);
+
+        const { error } = await supabase.from('pause_state').delete().in('phone_number', idsToDelete);
         if (error) console.error("[Supabase Error] unpause_customer failed:", error.message);
         return { status: error ? "failed" : "success", message: error ? error.message : "Customer unpaused." };
     } else if (funcName === 'message_customer') {
         console.log(`[Telegram Tool] AI is running message_customer for: ${args.phone_number}`);
-        await supabase.from('pause_state').delete().eq('phone_number', args.phone_number);
+        const strId = args.phone_number ? args.phone_number.toString().trim() : '';
+        const cleanId = strId.replace(/\D/g, '');
+        const idsToDelete = [strId];
+        if (cleanId && cleanId !== strId) idsToDelete.push(cleanId);
+        await supabase.from('pause_state').delete().in('phone_number', idsToDelete);
         let botReply;
         if (ACTIVE_AI === 'qwen') {
             const qwenContext = [{ role: 'user', content: `[ADMIN OVERRIDE INSTRUCTION: ${args.instruction}]` }];
@@ -613,21 +626,27 @@ async function processWebhook(data) {
             const statusList = value.statuses;
             if (statusList && statusList.length > 0) {
                 const statusObj = statusList[0];
+                if (statusObj.status === 'failed') {
+                    console.error(`[WhatsApp Delivery FAILED] To: ${statusObj.recipient_id}, Message ID: ${statusObj.id}, Errors:`, JSON.stringify(statusObj.errors || statusObj));
+                }
                 if (statusObj.status === 'sent') {
                     const msgId = statusObj.id;
-                    const targetId = statusObj.recipient_id ? statusObj.recipient_id.toString().replace(/\D/g, '') : null;
-                    const aiSent = cacheGet(msgId) || cacheGet(`ai_sent_${targetId}`);
+                    const rawRecipient = statusObj.recipient_id ? statusObj.recipient_id.toString() : null;
+                    const cleanRecipient = rawRecipient ? rawRecipient.replace(/\D/g, '') : null;
+                    const aiSent = cacheGet(msgId) || 
+                                   (rawRecipient ? cacheGet(`ai_sent_${rawRecipient}`) : false) || 
+                                   (cleanRecipient ? cacheGet(`ai_sent_${cleanRecipient}`) : false);
 
-                    if (!aiSent && targetId) {
-                        cacheSet(`last_paused_target`, targetId, 15);
+                    if (!aiSent && rawRecipient) {
+                        cacheSet(`last_paused_target`, rawRecipient, 15);
                         const orphanedText = cacheGet(`orphan_echo`);
                         if (orphanedText) {
-                            await pauseAI(targetId, orphanedText);
+                            await pauseAI(rawRecipient, orphanedText);
                             cacheDelete(`orphan_echo`);
                         } else {
-                            const isPaused = await checkIsPaused(targetId);
+                            const isPaused = await checkIsPaused(rawRecipient);
                             if (!isPaused) {
-                                await pauseAI(targetId, "[Human agent took over conversation]");
+                                await pauseAI(rawRecipient, "[Human agent took over conversation]");
                             }
                         }
                     }
@@ -678,18 +697,21 @@ async function processWebhook(data) {
                         const msgId = messageObj.id;
                         let targetId = messageObj.to;
                         if (!targetId && value.contacts && value.contacts.length > 0) {
-                            targetId = value.contacts[0].wa_id;
+                            targetId = value.contacts[0].wa_id || value.contacts[0].user_id || value.contacts[0].id;
                         }
-                        if (targetId) targetId = targetId.toString().replace(/\D/g, '');
+                        const rawTarget = targetId ? targetId.toString() : null;
+                        const cleanTarget = rawTarget ? rawTarget.replace(/\D/g, '') : null;
 
-                        const aiSent = cacheGet(msgId) || (targetId ? cacheGet(`ai_sent_${targetId}`) : false);
+                        const aiSent = cacheGet(msgId) || 
+                                       (rawTarget ? cacheGet(`ai_sent_${rawTarget}`) : false) || 
+                                       (cleanTarget ? cacheGet(`ai_sent_${cleanTarget}`) : false);
 
                         if (!aiSent) {
                             let contextToSave = textBody;
                             if (isMedia) contextToSave = `[Human agent sent a ${mediaType}: ${textBody}]`;
 
-                            if (targetId) {
-                                await pauseAI(targetId, contextToSave);
+                            if (rawTarget) {
+                                await pauseAI(rawTarget, contextToSave);
                             } else {
                                 const lastTarget = cacheGet(`last_paused_target`);
                                 if (lastTarget) {
@@ -986,10 +1008,18 @@ async function generateCommentReply(commentText) {
 // 3. DATABASE MEMORY LOGIC
 // ==========================================
 async function getDeepSeekHistory(senderId) {
+    if (!senderId) return [];
+    const strId = senderId.toString().trim();
+    const cleanId = strId.replace(/\D/g, '');
+    const idsToFetch = [strId];
+    if (cleanId && cleanId !== strId) {
+        idsToFetch.push(cleanId);
+    }
+
     const { data, error } = await supabase
         .from('conversations')
         .select('role, message_text')
-        .eq('phone_number', senderId)
+        .in('phone_number', idsToFetch)
         .order('created_at', { ascending: false })
         .limit(10);
     if (error) return [];
@@ -1000,10 +1030,18 @@ async function getDeepSeekHistory(senderId) {
 }
 
 async function getHistory(senderId) {
+    if (!senderId) return [];
+    const strId = senderId.toString().trim();
+    const cleanId = strId.replace(/\D/g, '');
+    const idsToFetch = [strId];
+    if (cleanId && cleanId !== strId) {
+        idsToFetch.push(cleanId);
+    }
+
     const { data, error } = await supabase
         .from('conversations')
         .select('role, message_text')
-        .eq('phone_number', senderId)
+        .in('phone_number', idsToFetch)
         .order('created_at', { ascending: false })
         .limit(10);
 
@@ -1025,10 +1063,18 @@ async function appendHistory(senderId, role, text) {
 }
 
 async function checkIsPaused(senderId) {
+    if (!senderId) return false;
+    const strId = senderId.toString().trim();
+    const cleanId = strId.replace(/\D/g, '');
+    const idsToCheck = [strId];
+    if (cleanId && cleanId !== strId) {
+        idsToCheck.push(cleanId);
+    }
+
     const { data, error } = await supabase
         .from('pause_state')
         .select('paused_until')
-        .eq('phone_number', senderId)
+        .in('phone_number', idsToCheck)
         .order('paused_until', { ascending: false })
         .limit(1);
 
@@ -1044,16 +1090,21 @@ async function checkIsPaused(senderId) {
 }
 
 async function pauseAI(senderId, humanMessage) {
+    if (!senderId) return;
+    const strId = senderId.toString().trim();
+    const cleanId = strId.replace(/\D/g, '');
     const pausedUntil = new Date();
     pausedUntil.setMinutes(pausedUntil.getMinutes() + 3);
 
-    await supabase.from('pause_state').upsert({
-        phone_number: senderId,
-        paused_until: pausedUntil.toISOString()
-    }, { onConflict: 'phone_number' });
+    const records = [{ phone_number: strId, paused_until: pausedUntil.toISOString() }];
+    if (cleanId && cleanId !== strId) {
+        records.push({ phone_number: cleanId, paused_until: pausedUntil.toISOString() });
+    }
 
-    await appendHistory(senderId, "model", humanMessage);
-    console.log(`[Auto-Pause] Paused AI for ${senderId} for 3 minutes. Saved human context.`);
+    await supabase.from('pause_state').upsert(records, { onConflict: 'phone_number' });
+
+    await appendHistory(strId, "model", humanMessage);
+    console.log(`[Auto-Pause] Paused AI for ${strId} for 3 minutes. Saved human context.`);
 }
 
 async function handleAdminCommand(adminId, commandText) {
@@ -1776,6 +1827,17 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
 }
 
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
+    if (!recipientPhone) {
+        console.error("[sendWhatsAppMessage] No recipientPhone provided.");
+        return;
+    }
+
+    const recipientStr = recipientPhone.toString().trim();
+    // BSUID handles (e.g. MY.1766392011328199) contain a period or letters.
+    // Dualhook & Meta specification: For BSUID, put complete ID in "recipient" and leave out "to" entirely.
+    // For traditional phone numbers, put in "to" and leave out "recipient".
+    const isBSUID = recipientStr.includes('.') || /[a-zA-Z]/.test(recipientStr);
+
     const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
     const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
     const url = `${baseUrl}/v25.0/${META_PHONE_NUMBER_ID}/messages`;
@@ -1783,25 +1845,37 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
     const payload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
-        to: recipientPhone,
         type: "text",
         text: { preview_url: false, body: textMessage }
     };
 
+    if (isBSUID) {
+        payload.recipient = recipientStr;
+    } else {
+        payload.to = recipientStr;
+    }
+
+    const cleanTo = recipientStr.replace(/\D/g, '');
+
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-            cacheSet(`ai_sent_${cleanTo}`, "true", 5);
+            if (cleanTo) cacheSet(`ai_sent_${cleanTo}`, "true", 60);
+            cacheSet(`ai_sent_${recipientStr}`, "true", 60);
+
             const response = await axios.post(url, payload, {
                 headers: { Authorization: `Bearer ${bearerToken}` }
             });
+
             if (response.data && response.data.messages && response.data.messages.length > 0) {
-                cacheSet(response.data.messages[0].id, "true", 300);
+                response.data.messages.forEach(m => {
+                    if (m.id) cacheSet(m.id, "true", 600);
+                });
             }
-            console.log(`[Sent] Message to ${recipientPhone}`);
+
+            console.log(`[Sent] Message to ${recipientStr} (${isBSUID ? 'BSUID via recipient' : 'Phone via to'}): ${JSON.stringify(response.data)}`);
             return;
         } catch (error) {
-            console.error(`WhatsApp Send Error (Attempt ${attempt}/3) to ${recipientPhone}:`, error.response ? JSON.stringify(error.response.data) : error.message);
+            console.error(`WhatsApp Send Error (Attempt ${attempt}/3) to ${recipientStr}:`, error.response ? JSON.stringify(error.response.data) : error.message);
             if (attempt === 3) return;
             await new Promise(r => setTimeout(r, 2000));
         }
@@ -1845,6 +1919,10 @@ async function replyToInstagramComment(commentId, textMessage) {
 }
 
 async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode = "en") {
+    if (!recipientPhone) return;
+    const recipientStr = recipientPhone.toString().trim();
+    const isBSUID = recipientStr.includes('.') || /[a-zA-Z]/.test(recipientStr);
+
     const baseUrl = process.env.DUALHOOK_API_KEY ? 'https://api.dualhook.com' : 'https://graph.facebook.com';
     const bearerToken = process.env.DUALHOOK_API_KEY || META_ACCESS_TOKEN;
     const url = `${baseUrl}/v25.0/${META_PHONE_NUMBER_ID}/messages`;
@@ -1852,7 +1930,6 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
     const payload = {
         messaging_product: "whatsapp",
         recipient_type: "individual",
-        to: recipientPhone,
         type: "template",
         template: {
             name: templateName,
@@ -1860,20 +1937,33 @@ async function sendWhatsAppTemplate(recipientPhone, templateName, languageCode =
         }
     };
 
+    if (isBSUID) {
+        payload.recipient = recipientStr;
+    } else {
+        payload.to = recipientStr;
+    }
+
+    const cleanTo = recipientStr.replace(/\D/g, '');
+
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const cleanTo = recipientPhone.toString().replace(/\D/g, '');
-            cacheSet(`ai_sent_${cleanTo}`, "true", 5);
+            if (cleanTo) cacheSet(`ai_sent_${cleanTo}`, "true", 60);
+            cacheSet(`ai_sent_${recipientStr}`, "true", 60);
+
             const response = await axios.post(url, payload, {
-                headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` }
+                headers: { Authorization: `Bearer ${bearerToken}` }
             });
+
             if (response.data && response.data.messages && response.data.messages.length > 0) {
-                cacheSet(response.data.messages[0].id, "true", 300);
+                response.data.messages.forEach(m => {
+                    if (m.id) cacheSet(m.id, "true", 600);
+                });
             }
-            console.log(`[Sent] Template ${templateName} to ${recipientPhone}`);
+
+            console.log(`[Sent] Template ${templateName} to ${recipientStr} (${isBSUID ? 'BSUID via recipient' : 'Phone via to'}): ${JSON.stringify(response.data)}`);
             return;
         } catch (error) {
-            console.error(`WhatsApp Template Send Error (Attempt ${attempt}/3):`, error.response ? JSON.stringify(error.response.data) : error.message);
+            console.error(`WhatsApp Template Send Error (Attempt ${attempt}/3) to ${recipientStr}:`, error.response ? JSON.stringify(error.response.data) : error.message);
             if (attempt === 3) return;
             await new Promise(r => setTimeout(r, 2000));
         }
