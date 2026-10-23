@@ -2044,6 +2044,195 @@ app.post('/gmail-webhook', async (req, res) => {
     }
 });
 
+
+// ==========================================
+// 7.1 GMAIL SPAM EVALUATION & RESCUE API
+// ==========================================
+async function evaluateSpamEmail(senderEmail, subject, body) {
+    const prompt = `You are Selena's spam evaluator for Sanctum Dive Resort, a scuba diving resort and dive center in Nusa Penida, Bali, Indonesia.
+
+An incoming email was placed into Gmail's Spam folder.
+Your job is to strictly classify whether this email is a REAL CUSTOMER / BUSINESS INQUIRY or TRUE SPAM.
+
+LEGITIMATE EMAILS (isLegit: true) INCLUDE:
+- Anyone asking about scuba diving (Discover Scuba / Try Dive, Fun Dives, PADI Open Water, Advanced, Rescue, Divemaster, etc.).
+- Inquiries about snorkeling trips or manta ray diving in Nusa Penida / Bali.
+- Room / hotel reservations at Sanctum Dive Resort.
+- Questions about pricing, schedules, gear rental, equipment, medical requirements, or ferry transfers.
+- Booking confirmations / receipts from booking platforms (Viator, Bokun, Trip.com, GetYourGuide, Airbnb, Booking.com, etc.).
+- Genuine human travelers or past/future guests asking questions.
+
+TRUE SPAM (isLegit: false) INCLUDES:
+- Unsolicited B2B sales pitches (SEO, backlink outreach, website design/development agencies, software pitches).
+- Crypto, investments, loans, financial schemes, inheritance scams, phishing.
+- Mass marketing newsletters, cold recruitment/staffing sales.
+- Adult/dating/pharma spam.
+
+EMAIL DETAILS:
+From: ${senderEmail}
+Subject: ${subject || "(No Subject)"}
+Body Snippet:
+${(body || "").substring(0, 1500)}
+
+Respond with ONLY a JSON object:
+{
+  "isLegit": true or false,
+  "reason": "Brief 1-sentence reason"
+}`;
+
+    // 1. Try DeepSeek Flash
+    try {
+        if (DEEPSEEK_API_KEY) {
+            const dsRes = await axios.post('https://api.deepseek.com/chat/completions', {
+                model: 'deepseek-flash',
+                messages: [
+                    { role: 'system', content: 'You are an email classification assistant. Respond ONLY in valid JSON format.' },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.1,
+                max_tokens: 150,
+                response_format: { type: 'json_object' }
+            }, {
+                headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
+                timeout: 15000
+            });
+
+            if (dsRes.data.choices && dsRes.data.choices.length > 0) {
+                const text = dsRes.data.choices[0].message.content.trim();
+                const parsed = JSON.parse(text);
+                return { isLegit: Boolean(parsed.isLegit), reason: parsed.reason || "Evaluated by DeepSeek" };
+            }
+        }
+    } catch (err) {
+        console.error("[Spam Eval DeepSeek Error]", err.message);
+    }
+
+    // 2. Fallback to Gemini Flash
+    try {
+        if (process.env.GEMINI_API_KEY) {
+            const geminiRes = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+                {
+                    contents: [{ role: "user", parts: [{ text: prompt }] }],
+                    generationConfig: {
+                        temperature: 0.1,
+                        maxOutputTokens: 150
+                    }
+                },
+                { timeout: 15000 }
+            );
+
+            if (geminiRes.data.candidates && geminiRes.data.candidates.length > 0) {
+                const text = geminiRes.data.candidates[0].content.parts[0].text;
+                const jsonMatch = text.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    const parsed = JSON.parse(jsonMatch[0]);
+                    return { isLegit: Boolean(parsed.isLegit), reason: parsed.reason || "Evaluated by Gemini" };
+                }
+            }
+        }
+    } catch (err) {
+        console.error("[Spam Eval Gemini Error]", err.message);
+    }
+
+    return { isLegit: false, reason: "Evaluation failed or uncertain" };
+}
+
+app.post('/evaluate-spam', async (req, res) => {
+    try {
+        const { threadId, messageId, senderEmail, subject, body, attachments } = req.body;
+
+        console.log(`[Spam Inspector] Inspecting email from ${senderEmail}: ${subject}`);
+
+        const senderEmailLower = (senderEmail || "").toLowerCase();
+
+        // 1. Instant block for obvious automated bots/vendors (unless booking platform)
+        if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply') || senderEmailLower.includes('mailer-daemon')) &&
+            !senderEmailLower.includes('viator') &&
+            !senderEmailLower.includes('bokun') &&
+            !senderEmailLower.includes('trip') &&
+            !senderEmailLower.includes('getyourguide') &&
+            !senderEmailLower.includes('booking.com') &&
+            !senderEmailLower.includes('airbnb')
+        ) {
+            console.log(`[Spam Inspector] HARD BLOCKED automated spam: ${senderEmail}`);
+            return res.json({ isLegit: false, action: "IGNORED", reason: "Automated/no-reply sender" });
+        }
+
+        // 2. AI Spam Evaluation
+        const evalResult = await evaluateSpamEmail(senderEmail, subject, body);
+
+        if (!evalResult.isLegit) {
+            console.log(`[Spam Inspector] AI classified as SPAM: ${senderEmail} - ${subject} (${evalResult.reason})`);
+            return res.json({ isLegit: false, action: "IGNORED", reason: evalResult.reason });
+        }
+
+        // 3. Legit email rescued!
+        console.log(`[Spam Inspector] 🎉 RESCUING legitimate client inquiry from ${senderEmail}: ${subject} (${evalResult.reason})`);
+
+        // Send Telegram alert to admin immediately
+        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+            const alertText = `🚨 SPAM RESCUE ALERT!\n\n` +
+                `Selena rescued a legitimate client inquiry from Gmail Spam!\n\n` +
+                `👤 From: ${senderEmail}\n` +
+                `📌 Subject: ${subject || "(No Subject)"}\n` +
+                `💡 Reason: ${evalResult.reason}\n\n` +
+                `✅ Action: Moved to Inbox & AI Draft created.`;
+            await sendTelegramAlert(alertText);
+        }
+
+        // 4. Process Context & Attachments
+        let contextToSave = `[Customer Email Subject: ${subject}]\n\n${body}`;
+        if (attachments && attachments.length > 0) {
+            for (const att of attachments) {
+                try {
+                    const buffer = Buffer.from(att.base64, 'base64');
+                    const mediaType = att.mimeType.startsWith('image') ? 'image' : 'document';
+                    const description = await analyzeMedia(buffer, att.mimeType, att.name, mediaType);
+                    contextToSave += `\n\n[Customer attached a file (${att.name}): ${description}]`;
+                    console.log(`[Gmail Media] Successfully analyzed attachment: ${att.name}`);
+                } catch (err) {
+                    console.error(`[Gmail Media] Failed to process attachment ${att.name}:`, err.message);
+                }
+            }
+        }
+
+        const isPaused = await checkIsPaused(senderEmail);
+        if (isPaused) {
+            await appendHistory(senderEmail, "user", contextToSave);
+            return res.json({ isLegit: true, action: "PAUSED", reason: evalResult.reason });
+        }
+
+        await appendHistory(senderEmail, "user", contextToSave);
+
+        // 5. Generate AI reply draft (DeepSeek Flash primary, Qwen fallback, Gemini safety net)
+        let aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+        if (!aiReply) {
+            console.log(`[Gmail Fallback] DeepSeek failed for ${senderEmail}. Falling back to Qwen...`);
+            aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+        }
+        if (!aiReply) {
+            console.log(`[Gmail Fallback] Qwen failed for ${senderEmail}. Falling back to Gemini...`);
+            aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
+        }
+
+        if (aiReply) {
+            if (/^IGNORE[\s.!\n]*$/i.test(aiReply.trim())) {
+                console.log(`[Spam Inspector] AI processed booking tool and replied IGNORE for ${senderEmail}`);
+                return res.json({ isLegit: true, action: "IGNORED", reason: evalResult.reason });
+            }
+
+            console.log(`[Spam Inspector] Creating draft for rescued email: ${senderEmail}`);
+            return res.json({ isLegit: true, action: "DRAFT_CREATED", replyText: aiReply, reason: evalResult.reason });
+        }
+
+        return res.json({ isLegit: true, action: "RESCUED_NO_DRAFT", reason: evalResult.reason });
+    } catch (error) {
+        console.error("Spam Evaluation Error:", error);
+        res.json({ isLegit: false, action: "ERROR", reason: error.message });
+    }
+});
+
 // cron.schedule('0 10 * * *', runDailyFollowUps); // DISABLED: Automatic follow-ups disabled
 
 app.listen(PORT, () => {
