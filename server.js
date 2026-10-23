@@ -700,9 +700,12 @@ async function processWebhook(data) {
                             }
                         }
                     } else {
-                        const senderId = messageObj.from || messageObj.from_user_id;
+                        let senderId = messageObj.from || messageObj.from_user_id || messageObj.user_id;
+                        if (!senderId && value.contacts && value.contacts.length > 0) {
+                            senderId = value.contacts[0].wa_id || value.contacts[0].user_id || value.contacts[0].id;
+                        }
                         if (!senderId) {
-                            console.error("[Warning] Could not extract customer ID! Ignoring. Payload:", JSON.stringify(messageObj));
+                            console.error("[Warning] Could not extract customer ID! Ignoring. Message:", JSON.stringify(messageObj), "Full Value:", JSON.stringify(value));
                             return;
                         }
 
@@ -745,6 +748,7 @@ async function processWebhook(data) {
                         }
 
                         if (isPaused) {
+                            console.log(`[Auto-Pause] Customer ${senderId} is currently paused. Skipping AI reply.`);
                             await appendHistory(senderId, "user", contextToSave);
                         } else {
                             await appendHistory(senderId, "user", contextToSave);
@@ -1797,7 +1801,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
             console.log(`[Sent] Message to ${recipientPhone}`);
             return;
         } catch (error) {
-            console.error(`WhatsApp Send Error (Attempt ${attempt}/3):`, error.response ? error.response.data : error.message);
+            console.error(`WhatsApp Send Error (Attempt ${attempt}/3) to ${recipientPhone}:`, error.response ? JSON.stringify(error.response.data) : error.message);
             if (attempt === 3) return;
             await new Promise(r => setTimeout(r, 2000));
         }
