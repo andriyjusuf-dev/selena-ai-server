@@ -23,6 +23,7 @@ const META_IG_USER_ID = process.env.META_IG_USER_ID;
 const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || "").split(',');
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const KETUT_TELEGRAM_HANDLE = process.env.KETUT_TELEGRAM_HANDLE || '@ketutdarmaja';
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
 // NEW: Qwen Cloud API Configuration
@@ -1162,7 +1163,8 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?. MULTIPLE GUESTS: MUST separate each guest with a semicolon (;). Add special requests at the end after a pipe (|).\n`;
     basePrompt += `Ex: "GuestName TD DPO; OtherName RESCC ? | specreq: none"\n`;
     basePrompt += `--- HOTEL BOOKINGS ('manage_hotel_booking') ---\n`;
-    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n\n`;
+    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n`;
+    basePrompt += `When alerting the team or using 'notify_admin' about hotel room bookings or hotel inquiries, always mention/tag Ketut as ${KETUT_TELEGRAM_HANDLE}.\n\n`;
 
 
     if (data && data.length > 0) {
@@ -1290,7 +1292,9 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                         resultStr = "Success";
                     } else if (funcName === "notify_admin") {
                         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n\n${args.message}`);
+                            const isHotel = args.message && /hotel|room|villa|stay|check-in|checkin|accommodation/i.test(args.message);
+                            const tagLine = isHotel ? `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n` : "";
+                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n${tagLine}\n${args.message}`);
                             resultStr = "Admin notified successfully.";
                         } else {
                             resultStr = "Admin chat not configured.";
@@ -1318,7 +1322,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
 
                                 if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (QWEN)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (QWEN)*\n🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
                                 }
                             } catch (e) { resultStr = e.message; }
@@ -1418,7 +1422,9 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                         resultStr = "Success";
                     } else if (funcName === "notify_admin") {
                         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n\n${args.message}`);
+                            const isHotel = args.message && /hotel|room|villa|stay|check-in|checkin|accommodation/i.test(args.message);
+                            const tagLine = isHotel ? `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n` : "";
+                            await sendTelegramAlert(`🚨 *ADMIN NOTIFICATION*\nFrom: ${senderId}\n${tagLine}\n${args.message}`);
                             resultStr = "Admin notified successfully.";
                         } else {
                             resultStr = "Admin chat not configured.";
@@ -1446,7 +1452,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
 
                                 if (funcName === "manage_hotel_booking" && args.action !== 'SEARCH') {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DS)*\n🛎️ **Attention: Ketut**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
+                                        await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM (DS)*\n🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\nAction: ${args.action}\nDates: ${(args.target_dates || []).join(', ')}\nGuest: ${args.guest_name || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
                                 }
                             } catch (e) { resultStr = e.message; }
@@ -1644,7 +1650,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                                 sheetMessage = (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) ? "Google Apps Script error." : (sheetRes.data.message || "Completed");
                                 console.log(`[Google Sheets] Hotel Response: ${sheetMessage}`);
                                 if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH') {
-                                    await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM*\n🛎️ **Attention: Ketut**\n\nAction: ${call.args.action}\nDates: ${(call.args.target_dates || []).join(', ')}\nGuest: ${call.args.guest_name || 'N/A'}\n\nStatus: ${sheetMessage}`);
+                                    await sendTelegramAlert(`🏨 *HOTEL UPDATE ALARM*\n🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\nAction: ${call.args.action}\nDates: ${(call.args.target_dates || []).join(', ')}\nGuest: ${call.args.guest_name || 'N/A'}\n\nStatus: ${sheetMessage}`);
                                 }
                             } catch (err) {
                                 console.error("[Google Sheets API Error]", err.message);
@@ -1687,7 +1693,9 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                     } else if (call.name === 'notify_admin') {
                         console.log(`[Telegram Tool] AI is running notify_admin: ${call.args.message}`);
                         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                            await sendTelegramAlert(`🚨 *SELENA ALERT*\n\n${call.args.message}`);
+                            const isHotel = call.args.message && /hotel|room|villa|stay|check-in|checkin|accommodation/i.test(call.args.message);
+                            const tagLine = isHotel ? `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n` : "";
+                            await sendTelegramAlert(`🚨 *SELENA ALERT*\n${tagLine}\n${call.args.message}`);
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     }
