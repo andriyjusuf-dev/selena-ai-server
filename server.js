@@ -26,7 +26,10 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const KETUT_TELEGRAM_HANDLE = process.env.KETUT_TELEGRAM_HANDLE || '@ketutdarmaja';
 
 // Cloudbeds PMS Live Integration (Sanctum Hotel Nusa Penida)
-const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY || "cbat_7Nlfros1hfcMwJQ7cEN93XzHA9NcGnvA";
+const CLOUDBEDS_API_KEY = process.env.CLOUDBEDS_API_KEY;
+if (!CLOUDBEDS_API_KEY) {
+    console.warn("⚠️ WARNING: CLOUDBEDS_API_KEY is not set in environment variables. Hotel integration requires CLOUDBEDS_API_KEY.");
+}
 const CLOUDBEDS_PROPERTY_ID = process.env.CLOUDBEDS_PROPERTY_ID || "284597444944000";
 const CLOUDBEDS_DELUXE_ROOM_TYPE_ID = process.env.CLOUDBEDS_DELUXE_ROOM_TYPE_ID || "284674448941249";
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
@@ -226,6 +229,14 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
 
         // 3. ADD NEW RESERVATION (Cloudbeds -> Google Sheet -> Telegram)
         if (action === 'ADD') {
+            const isStaffTelegram = callerSource && callerSource.includes("TELEGRAM");
+            const depositConfirmed = args.deposit_paid === true || args.deposit_confirmed === true || isStaffTelegram;
+
+            if (!depositConfirmed) {
+                console.warn(`[Hotel Booking Guardrail] Blocked room reservation for "${args.guest_name}" - No online deposit confirmation.`);
+                return "❌ BOOKING REJECTED: Hotel rooms can ONLY be reserved after the customer has paid the deposit online. Please send the payment link/instructions and obtain online deposit confirmation before booking.";
+            }
+
             const fullName = (args.guest_name || args.customer_name || "Guest").trim();
             const nameParts = fullName.split(" ");
             const firstName = nameParts[0] || "Guest";
@@ -309,6 +320,7 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
                     `🛏️ Room: Deluxe Room Garden View (${quantity} room${quantity > 1 ? 's' : ''})\n` +
                     `👥 Guests: ${pax} pax\n` +
                     rateLine +
+                    `💳 Deposit: ${isStaffTelegram ? 'Staff / Ketut Admin Override' : 'Verified Online Deposit ✅'}\n` +
                     `🆔 Cloudbeds ID: \`${reservationID}\`\n` +
                     `📊 Google Sheet: ${sheetStatus}\n\n` +
                     `✅ Room blocked across Booking.com & OTAs!`;
@@ -536,7 +548,8 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
-                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
+                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } }
     ];
 
@@ -598,7 +611,8 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
-                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
+                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } }
     ];
 
@@ -750,6 +764,7 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
                         rooms_count: { type: "INTEGER", description: "Number of rooms (default 1)" },
                         pax: { type: "INTEGER", description: "Number of guests" },
                 custom_rate: { type: "STRING", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "BOOLEAN", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." },
                         reservation_id: { type: "STRING", description: "Cloudbeds reservation ID for cancellation or lookup" },
                         old_guest_match: { type: "STRING", description: "Substring of guest name to cancel or update" },
                         search_query: { type: "STRING", description: "Guest name to search" }
@@ -1524,6 +1539,11 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `CRITICAL TOOL RESTRICTION: For direct customer chats, you are STRICTLY FORBIDDEN from calling 'manage_sheet_booking' (ADD/UPDATE) or 'manage_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If missing, ask them first. (This restriction does NOT apply to automated email receipts or action='CHECK_CAPACITY').\n`;
+    basePrompt += `CRITICAL HOTEL ONLINE DEPOSIT MANDATE: For direct customer chats (WhatsApp, Instagram, etc.), you are STRICTLY FORBIDDEN from calling 'manage_hotel_booking' with action='ADD' UNLESS the customer has EXPLICITLY paid their deposit online!
+- If a customer asks to book or reserve a room, explain that hotel rooms are ONLY reserved and locked upon receipt of the online deposit. Send them payment instructions/links per your rules.
+- DO NOT execute 'manage_hotel_booking' (action='ADD') until the online deposit is paid! You may still run 'CHECK_CAPACITY' to check live availability and quote rates.
+- Only once online deposit payment is confirmed, set deposit_paid=true when calling 'manage_hotel_booking' (action='ADD').
+- (Note: Internal staff like Ketut @ketutdarmaja in Telegram have admin override to book rooms directly for phone or walk-in guests).\n\n`;
     basePrompt += `CAPACITY CHECK RULE (#2 PRIORITY): Only if there is NO human override for a date, and a user asks for availability OR asks how many pax are booked, you MUST run 'manage_sheet_booking' with action: 'CHECK_CAPACITY' and 'target_date'. DO NOT manually count pax from search results. CRITICAL: When the tool returns the capacity, DO NOT tell the customer the exact number! Just say "Yes, we have availability!" or "Sorry, we are fully booked." Keep numbers strictly internal. If the sheet replies that it is full, you MUST politely refuse the booking!\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' or 'CHECK_CAPACITY' first before making changes. CRITICAL: If a user asks you to check a booking, you MUST run the SEARCH tool. HOWEVER, if the recent chat history clearly shows you ALREADY successfully confirmed, updated, or checked their booking in this exact conversation, DO NOT run the SEARCH or UPDATE tools again! Just reply naturally to their ongoing messages (e.g. 'You're welcome!').\n`;
     basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., take the first 3 letters of whatever their name is) to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
@@ -1532,9 +1552,12 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?. MULTIPLE GUESTS: MUST separate each guest with a semicolon (;). Add special requests at the end after a pipe (|).\n`;
     basePrompt += `Ex: "GuestName TD DPO; OtherName RESCC ? | specreq: none"\n`;
-    basePrompt += `--- HOTEL BOOKINGS ('manage_hotel_booking') ---\n`;
-    basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE', 'SEARCH'. Required: action, target_dates (Array like ["2026-12-16", "2026-12-17"]), guest_name.\n`;
-    basePrompt += `When alerting the team or using 'notify_admin' about hotel room bookings or hotel inquiries, always mention/tag Ketut as ${KETUT_TELEGRAM_HANDLE}.\n\n`;
+    basePrompt += `--- HOTEL ROOMS & DYNAMIC PRICING ('manage_hotel_booking') ---\n`;
+    basePrompt += `We operate Sanctum Hotel Nusa Penida with 8 Deluxe Room Garden View units (King bed + daybed lounge sofa, accommodating 2-3 guests). Note: Dormitory rooms are currently INACTIVE / OFFLINE. Only the 8 Deluxe Garden View rooms are live.\n`;
+    basePrompt += `DYNAMIC SEASONAL PRICING RULE: Room prices are dynamic and fluctuate based on season, holidays, and OTA demand in Cloudbeds PMS. There is NO static base rate! NEVER quote an assumed price without running 'manage_hotel_booking' with action='CHECK_CAPACITY'. Always run CHECK_CAPACITY to fetch live seasonal rates.\n`;
+    basePrompt += `ONLINE DEPOSIT MANDATE: Customer room bookings on WhatsApp/IG can ONLY be finalized after online deposit payment is confirmed. Pass deposit_paid=true when executing action='ADD'.\n`;
+    basePrompt += `MANUAL & DIRECT SALES: Selena can quote direct rates from Supabase rules or apply custom rates agreed by staff (pass 'custom_rate' in manage_hotel_booking).\n`;
+    basePrompt += `Always tag/mention Ketut as ${KETUT_TELEGRAM_HANDLE} on hotel inquiries, bookings, or cancellations.\n\n`;
 
 
     if (data && data.length > 0) {
@@ -1622,7 +1645,8 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
-                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
+                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
     ];
 
@@ -1742,7 +1766,8 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
-                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
+                custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
     ];
 
@@ -1911,6 +1936,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                 rooms_count: { type: "INTEGER", description: "Number of rooms (default 1)" },
                 pax: { type: "INTEGER", description: "Number of guests" },
                 custom_rate: { type: "STRING", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
+                deposit_paid: { type: "BOOLEAN", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." },
                 reservation_id: { type: "STRING", description: "Cloudbeds reservation ID for cancellation or lookup" },
                 old_guest_match: { type: "STRING", description: "Substring of guest name to cancel or update" },
                 search_query: { type: "STRING", description: "Guest name to search" }
