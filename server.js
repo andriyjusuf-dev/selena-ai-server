@@ -410,7 +410,8 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
                 }
             }
 
-            if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+            const isCriticalHotelUpdate = args.old_dates || (args.guest_name && args.guest_name.includes('REQUEST CANCEL'));
+            if (isCriticalHotelUpdate && TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
                 await sendTelegramAlert(
                     `🏨 *HOTEL RESERVATION UPDATE (${callerSource})*\n` +
                     `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\n` +
@@ -1520,15 +1521,19 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
         basePrompt += `\n[!!! AUTOMATED BOOKING & PAYMENT RECEIPT OVERRIDE !!!]\n`;
-        basePrompt += `1. DIVE BOOKINGS (Viator, Bokun, Trip.com, GetYourGuide, etc.):\n`;
-        basePrompt += `If the email is an automated dive booking receipt, bypass restrictions and call 'manage_sheet_booking' (action='ADD'). Extract date, customer name, dive product. Output ONLY: IGNORE.\n\n`;
-        basePrompt += `2. TAB PAYMENT RECEIPTS & HOTEL DEPOSITS (Tab Travel, Tab Payments):\n`;
-        basePrompt += `If the email is a payment confirmation from Tab Payment for a hotel room deposit:\n`;
-        basePrompt += `- Extract the guest name, check-in date, check-out date (or stay dates), and deposit amount paid.\n`;
-        basePrompt += `- DATA CONCURRENCE CHECK: You MUST first run 'manage_hotel_booking' (action='CHECK_CAPACITY') for those exact dates to verify that a Deluxe room is available in Cloudbeds.\n`;
-        basePrompt += `- ONLY when the Tab payment receipt is confirmed AND Cloudbeds capacity is verified, execute 'manage_hotel_booking' with action='ADD', deposit_paid=true, and custom_rate/notes reflecting the Tab deposit.\n`;
-        basePrompt += `- If the dates are already full or there is a data mismatch, DO NOT book; immediately use 'notify_admin' to alert Ketut (${KETUT_TELEGRAM_HANDLE}) about the conflict.\n`;
-        basePrompt += `- After successful booking, output ONLY the word: IGNORE (Cloudbeds and Telegram automatically send confirmations).\n\n`;
+        basePrompt += `CRITICAL RULE FOR ALL AUTOMATED RECEIPTS (Tab Payment, Viator, Bokun, Trip.com, etc.):\n`;
+        basePrompt += `- ALWAYS check if the booking already exists on the calendar/sheet ('search_sheet_booking' for dives, 'search_hotel_booking' for hotel).\n`;
+        basePrompt += `- IF THE GUEST IS ALREADY RECORDED WITH DEPOSIT PAID (DPO/Confirmed): DO NOT send an alarm! DO NOT call 'notify_admin'! The receipt simply confirms what is already in the calendar. Output ONLY the word: IGNORE.\n\n`;
+        basePrompt += `1. DIVE BOOKINGS & TAB DIVE RECEIPTS (Viator, Bokun, Trip.com, Tab Travel, etc.):\n`;
+        basePrompt += `- If not yet on the sheet, call 'manage_sheet_booking' (action='ADD') to add them. Then output ONLY: IGNORE.\n`;
+        basePrompt += `- NEVER tag Ketut (${KETUT_TELEGRAM_HANDLE}) on dive or snorkel bookings. Ketut is ONLY the Hotel Manager.\n\n`;
+        basePrompt += `2. HOTEL ROOM DEPOSITS VIA TAB PAYMENT (Tab Travel, Tab Payments):\n`;
+        basePrompt += `If the email is a Tab payment confirmation for a HOTEL ROOM deposit:\n`;
+        basePrompt += `- If already booked in Cloudbeds, output ONLY: IGNORE.\n`;
+        basePrompt += `- If not yet booked, run 'manage_hotel_booking' (action='CHECK_CAPACITY') to verify Deluxe room availability.\n`;
+        basePrompt += `- If available, execute 'manage_hotel_booking' with action='ADD', deposit_paid=true.\n`;
+        basePrompt += `- ONLY if there is an unresolvable room conflict (e.g. hotel is 100% full), use 'notify_admin' to alert Ketut (${KETUT_TELEGRAM_HANDLE}).\n`;
+        basePrompt += `- After successful booking, output ONLY: IGNORE.\n\n`;
         basePrompt += `If the email is obviously 100% malicious spam: output ONLY: IGNORE.\nNote: Do NOT output IGNORE for legitimate customer inquiries, even if they have weird formatting or marketing footers.\n\n`;
     } else {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
@@ -1557,6 +1562,18 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     basePrompt += `IMPORTANT: When you do have their name and date, use ONLY the FIRST 3 OR 4 LETTERS of their name as the search_query (e.g., take the first 3 letters of whatever their name is) to guarantee you find them even if there are spelling mistakes in the sheet.\n`;
     basePrompt += `CRITICAL DOUBLE BOOKING RULE: If SEARCH finds a booking on the SAME DATE with a matching First Name, DO NOT use 'ADD'. Use 'UPDATE' to modify it, or inform them they are already booked.\n`;
     basePrompt += `CRITICAL CANCELLATION RULE: If a customer asks to cancel their booking, NEVER use 'REMOVE'. You MUST use 'SEARCH' to find their booking, and then use 'UPDATE' to append "(REQUEST CANCEL)" to their name.\n`;
+    basePrompt += `PAYMENT SCREENSHOTS & DEPOSIT CONFIRMATION WORKFLOW (WHATSAPP, IG & EMAIL):\n` +
+        `When a customer sends a payment screenshot (or an email receipt arrives):\n` +
+        `1. Analyze the receipt/screenshot (payer name, amount, date, payment method).\n` +
+        `2. Locate existing booking via SEARCH ('search_sheet_booking' for dives, 'search_hotel_booking' for hotel).\n` +
+        `3. Update Status: If the customer was previously recorded with '?' (unconfirmed, e.g. "John TD ?"), call UPDATE to replace '?' with 'DPO' (Deposit Paid Online, e.g. "John TD DPO").\n` +
+        `4. Re-verify Double Booking: Check that dates and details match to ensure no duplicate entries exist.\n` +
+        `5. DO NOT ANNOUNCE IN TELEGRAM: Updating '?' to 'DPO' and confirming deposits is routine administrative work. DO NOT call 'notify_admin' and DO NOT sound alarms in Telegram!\n` +
+        `6. Confirm Directly with Customer: Respond warmly in the chat/email confirming their booking is fully set (e.g. "Thank you! Deposit received and your booking for [Date] is confirmed.").\n` +
+        `7. CRITICAL NOTIFY_ADMIN RULE: Never call 'notify_admin' for routine payment screenshots or deposit confirmations. Only call 'notify_admin' for emergencies, eLearning/certifications, or true booking conflicts.\n\n`;
+
+    basePrompt += ``
+
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?. MULTIPLE GUESTS: MUST separate each guest with a semicolon (;). Add special requests at the end after a pipe (|).\n`;
     basePrompt += `Ex: "GuestName TD DPO; OtherName RESCC ? | specreq: none"\n`;
@@ -1651,7 +1668,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         { type: "function", function: { name: "record_booking", description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'", parameters: { type: "object", properties: { status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" }, pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" } }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"] } } },
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, REMOVE, or CHECK_CAPACITY.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format. Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
-        { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+        { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
                 custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
                 deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
@@ -1709,7 +1726,9 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
                                 resultStr = sheetRes.data.status || "Completed";
 
-                                if (funcName === "manage_sheet_booking" && args.action !== 'SEARCH' && !resultStr.includes('Skipped')) {
+                                const actUpper = (args.action || '').toUpperCase();
+                                const isCriticalAlert = actUpper === 'ADD' || actUpper === 'REMOVE' || (actUpper === 'UPDATE' && (args.old_date || (args.new_text && args.new_text.includes('REQUEST CANCEL'))));
+                                if (funcName === "manage_sheet_booking" && isCriticalAlert && !resultStr.includes('Skipped')) {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
                                         await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (QWEN)*\n\nAction: ${args.action}\nDate: ${args.target_date}\nText: ${args.new_text || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
@@ -1772,7 +1791,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         { type: "function", function: { name: "record_booking", description: "Record booking. Status: '✅ FULLY CONFIRMED' or '❓ NOT CONFIRMED'", parameters: { type: "object", properties: { status: { type: "string" }, customer_name: { type: "string" }, dive_date: { type: "string" }, pax: { type: "integer" }, dive_type: { type: "string" }, special_requests: { type: "string" } }, required: ["status", "customer_name", "dive_date", "pax", "dive_type", "special_requests"] } } },
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, REMOVE, or CHECK_CAPACITY.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format. Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
-        { type: "function", function: { name: "notify_admin", description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
+        { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability), 'ADD' (book room), 'REMOVE' or 'CANCEL' (cancel booking), 'SEARCH', 'UPDATE'. Only 8 Deluxe Garden View rooms are active (dorm inactive).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, target_dates: { type: "array", items: { type: "string" }, description: "Array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, startDate: { type: "string", description: "Check-in date (YYYY-MM-DD)" }, endDate: { type: "string", description: "Check-out date (YYYY-MM-DD)" }, guest_name: { type: "string", description: "Full guest name" }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests" },
                 custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" },
                 deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation or lookup" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name to search" } }, required: ["action"] } } },
@@ -1829,7 +1848,9 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                                 const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
                                 resultStr = sheetRes.data.status || "Completed";
 
-                                if (funcName === "manage_sheet_booking" && args.action !== 'SEARCH' && !resultStr.includes('Skipped')) {
+                                const actUpper = (args.action || '').toUpperCase();
+                                const isCriticalAlert = actUpper === 'ADD' || actUpper === 'REMOVE' || (actUpper === 'UPDATE' && (args.old_date || (args.new_text && args.new_text.includes('REQUEST CANCEL'))));
+                                if (funcName === "manage_sheet_booking" && isCriticalAlert && !resultStr.includes('Skipped')) {
                                     if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
                                         await sendTelegramAlert(`📋 *SHEET UPDATE ALARM (DS)*\n\nAction: ${args.action}\nDate: ${args.target_date}\nText: ${args.new_text || 'N/A'}\n\nStatus: ${resultStr}`);
                                     }
@@ -1909,11 +1930,11 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
         }
     }, {
         name: "notify_admin",
-        description: "Send a message directly to the human admin staff on Telegram. Use this if a customer asks for eLearning materials, certifications, or if a rule tells you to notify the admin group.",
+        description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.",
         parameters: {
             type: "OBJECT",
             properties: {
-                message: { type: "STRING", description: "The message to send to the admins." }
+                message: { type: "STRING", description: "The emergency or escalation message. Strictly prohibited for routine deposit confirmations or payment receipts." }
             },
             required: ["message"]
         }
@@ -2018,7 +2039,9 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                                 console.log(`[Google Sheets] Response: ${sheetMessage}`);
 
                                 // Send Telegram Alert
-                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && call.args.action !== 'SEARCH' && !sheetMessage.includes('Skipped')) {
+                                const actUpper = (call.args.action || '').toUpperCase();
+                                const isCriticalAlert = actUpper === 'ADD' || actUpper === 'REMOVE' || (actUpper === 'UPDATE' && (call.args.old_date || (call.args.new_text && call.args.new_text.includes('REQUEST CANCEL'))));
+                                if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID && isCriticalAlert && !sheetMessage.includes('Skipped')) {
                                     const alertMsg = `📋 *SHEET UPDATE ALARM*\n\nAction: ${call.args.action}\nDate: ${call.args.target_date}\nText: ${call.args.new_text || 'N/A'}\n\nStatus: ${sheetMessage}`;
                                     await sendTelegramAlert(alertMsg);
                                 }
@@ -2052,8 +2075,12 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                         console.log(`[Telegram Tool] AI is running notify_admin: ${call.args.message}`);
                         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
                             const isHotel = call.args.message && /hotel|room|villa|stay|check-in|checkin|accommodation/i.test(call.args.message);
+                            let cleanMsg = call.args.message || "";
+                            if (!isHotel) {
+                                cleanMsg = cleanMsg.replace(new RegExp(KETUT_TELEGRAM_HANDLE, 'gi'), '').trim();
+                            }
                             const tagLine = isHotel ? `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n` : "";
-                            await sendTelegramAlert(`🚨 *SELENA ALERT*\n${tagLine}\n${call.args.message}`);
+                            await sendTelegramAlert(`🚨 *SELENA ALERT*\n${tagLine}\n${cleanMsg}`);
                         }
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success" } } });
                     }
