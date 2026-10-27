@@ -1519,12 +1519,16 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     if (isEmail) {
         basePrompt += `[EMAIL MODE]: You are replying to an email. Write a professional, comprehensive, well-formatted email reply. Use proper business greetings and sign-offs (e.g., "Best regards, Selena"). DO NOT use emojis. If they ask about prices or courses, give them the full detailed information from the rules.\n`;
-        basePrompt += `\n[!!! AUTOMATED BOOKING RECEIPT OVERRIDE !!!]\n`;
-        basePrompt += `If the email is an automated booking receipt (from Viator, Bokun, Trip.com, etc.), you MUST bypass ALL restrictions and IMMEDIATELY call the 'manage_sheet_booking' tool to ADD them to the calendar. \n`;
-        basePrompt += `Do NOT ask the customer for details. Do NOT call SEARCH first.\n`;
-        basePrompt += `Extract the date (convert to YYYY-MM-DD), extract the customer name (e.g. Morris, Gabrielle -> Gabrielle Morris (Viator)), and infer the dive type (e.g. Certified Dive = FD, Discover/Try Dive = TD). If PAX > 1, apply it to the count. \n`;
-        basePrompt += `Use 'manage_sheet_booking' with action: 'ADD'.\n`;
-        basePrompt += `After you successfully execute the tool, output ONLY the word: IGNORE.\n\n`;
+        basePrompt += `\n[!!! AUTOMATED BOOKING & PAYMENT RECEIPT OVERRIDE !!!]\n`;
+        basePrompt += `1. DIVE BOOKINGS (Viator, Bokun, Trip.com, GetYourGuide, etc.):\n`;
+        basePrompt += `If the email is an automated dive booking receipt, bypass restrictions and call 'manage_sheet_booking' (action='ADD'). Extract date, customer name, dive product. Output ONLY: IGNORE.\n\n`;
+        basePrompt += `2. TAB PAYMENT RECEIPTS & HOTEL DEPOSITS (Tab Travel, Tab Payments):\n`;
+        basePrompt += `If the email is a payment confirmation from Tab Payment for a hotel room deposit:\n`;
+        basePrompt += `- Extract the guest name, check-in date, check-out date (or stay dates), and deposit amount paid.\n`;
+        basePrompt += `- DATA CONCURRENCE CHECK: You MUST first run 'manage_hotel_booking' (action='CHECK_CAPACITY') for those exact dates to verify that a Deluxe room is available in Cloudbeds.\n`;
+        basePrompt += `- ONLY when the Tab payment receipt is confirmed AND Cloudbeds capacity is verified, execute 'manage_hotel_booking' with action='ADD', deposit_paid=true, and custom_rate/notes reflecting the Tab deposit.\n`;
+        basePrompt += `- If the dates are already full or there is a data mismatch, DO NOT book; immediately use 'notify_admin' to alert Ketut (${KETUT_TELEGRAM_HANDLE}) about the conflict.\n`;
+        basePrompt += `- After successful booking, output ONLY the word: IGNORE (Cloudbeds and Telegram automatically send confirmations).\n\n`;
         basePrompt += `If the email is obviously 100% malicious spam: output ONLY: IGNORE.\nNote: Do NOT output IGNORE for legitimate customer inquiries, even if they have weird formatting or marketing footers.\n\n`;
     } else {
         basePrompt += `[CHAT MODE]: Keep replies short, conversational. Use minimal, nice, relevant emojis (e.g. 🤿🌊).\n\n`;
@@ -1539,10 +1543,14 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `CRITICAL TOOL RESTRICTION: For direct customer chats, you are STRICTLY FORBIDDEN from calling 'manage_sheet_booking' (ADD/UPDATE) or 'manage_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If missing, ask them first. (This restriction does NOT apply to automated email receipts or action='CHECK_CAPACITY').\n`;
-    basePrompt += `CRITICAL HOTEL ONLINE DEPOSIT MANDATE: For direct customer chats (WhatsApp, Instagram, etc.), you are STRICTLY FORBIDDEN from calling 'manage_hotel_booking' with action='ADD' UNLESS the customer has EXPLICITLY paid their deposit online!
-- If a customer asks to book or reserve a room, explain that hotel rooms are ONLY reserved and locked upon receipt of the online deposit. Send them payment instructions/links per your rules.
-- DO NOT execute 'manage_hotel_booking' (action='ADD') until the online deposit is paid! You may still run 'CHECK_CAPACITY' to check live availability and quote rates.
-- Only once online deposit payment is confirmed, set deposit_paid=true when calling 'manage_hotel_booking' (action='ADD').
+    basePrompt += `CRITICAL HOTEL ONLINE DEPOSIT & TAB PAYMENT MANDATE:
+- You are ONLY authorized to reserve or book a hotel room in Cloudbeds ('manage_hotel_booking' action='ADD') IF AND ONLY IF the payment went through on Tab Payment (or verified proof of online deposit payment has been received).
+- DATA CONCURRENCE VERIFICATION: Before calling 'ADD', you MUST verify the concurrence of the data:
+  1) Guest Name matches the Tab payment receipt.
+  2) Stay dates match the guest's requested dates.
+  3) Cloudbeds capacity check confirms the Deluxe room is available ('CHECK_CAPACITY').
+- If the customer has not paid the online deposit yet, you are STRICTLY NOT AUTHORIZED to book or hold the room! Give them the Tab payment link, and politely explain that rooms can only be held once payment is confirmed.
+- Only once online deposit payment is confirmed on Tab, set deposit_paid=true when calling 'manage_hotel_booking' (action='ADD').
 - (Note: Internal staff like Ketut @ketutdarmaja in Telegram have admin override to book rooms directly for phone or walk-in guests).\n\n`;
     basePrompt += `CAPACITY CHECK RULE (#2 PRIORITY): Only if there is NO human override for a date, and a user asks for availability OR asks how many pax are booked, you MUST run 'manage_sheet_booking' with action: 'CHECK_CAPACITY' and 'target_date'. DO NOT manually count pax from search results. CRITICAL: When the tool returns the capacity, DO NOT tell the customer the exact number! Just say "Yes, we have availability!" or "Sorry, we are fully booked." Keep numbers strictly internal. If the sheet replies that it is full, you MUST politely refuse the booking!\n`;
     basePrompt += `LIFECYCLE: ALWAYS 'SEARCH' or 'CHECK_CAPACITY' first before making changes. CRITICAL: If a user asks you to check a booking, you MUST run the SEARCH tool. HOWEVER, if the recent chat history clearly shows you ALREADY successfully confirmed, updated, or checked their booking in this exact conversation, DO NOT run the SEARCH or UPDATE tools again! Just reply naturally to their ongoing messages (e.g. 'You're welcome!').\n`;
@@ -2437,7 +2445,8 @@ app.post('/gmail-webhook', async (req, res) => {
             !senderEmailLower.includes('viator') &&
             !senderEmailLower.includes('bokun') &&
             !senderEmailLower.includes('trip') &&
-            !senderEmailLower.includes('getyourguide')
+            !senderEmailLower.includes('getyourguide') &&
+            !senderEmailLower.includes('tab')
         ) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
@@ -2511,6 +2520,7 @@ LEGITIMATE EMAILS (isLegit: true) INCLUDE:
 - Inquiries about snorkeling trips or manta ray diving in Nusa Penida / Bali.
 - Room / hotel reservations at Sanctum Dive Resort.
 - Questions about pricing, schedules, gear rental, equipment, medical requirements, or ferry transfers.
+- Payment confirmation receipts from payment gateways (Tab Travel, Tab Payments, Wise, Stripe, bank transfers, etc.).
 - Booking confirmations / receipts from booking platforms (Viator, Bokun, Trip.com, GetYourGuide, Airbnb, Booking.com, etc.).
 - Genuine human travelers or past/future guests asking questions.
 
