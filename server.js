@@ -1614,7 +1614,7 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
     let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. `;
 
     if (platform === 'instagram') {
-        basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on Instagram Direct Messages.] \n\n`;
+        basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on Instagram Direct Messages. Meta strictly limits each Instagram DM to 1,000 characters. Keep your answers friendly, engaging, and concise (ideally under 800 characters) without overwhelming the user with long walls of text.] \n\n`;
     } else if (platform === 'whatsapp') {
         basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on WhatsApp.] \n\n`;
     }
@@ -2324,11 +2324,50 @@ async function analyzeMedia(buffer, mimeType, caption, mediaType) {
     return "Media was sent, but it could not be analyzed.";
 }
 
+// Helper to cleanly split messages exceeding platform character limits at logical breaks (paragraphs, newlines, sentences)
+function splitMessageIntoChunks(text, maxLength = 950) {
+    if (!text || text.length <= maxLength) return [text || ""];
+    const chunks = [];
+    let remaining = text.trim();
+    while (remaining.length > 0) {
+        if (remaining.length <= maxLength) {
+            chunks.push(remaining);
+            break;
+        }
+        let splitIdx = remaining.lastIndexOf('\n\n', maxLength);
+        if (splitIdx === -1 || splitIdx < maxLength * 0.35) {
+            splitIdx = remaining.lastIndexOf('\n', maxLength);
+        }
+        if (splitIdx === -1 || splitIdx < maxLength * 0.35) {
+            const dotIdx = remaining.lastIndexOf('. ', maxLength);
+            if (dotIdx !== -1 && dotIdx >= maxLength * 0.35) splitIdx = dotIdx + 1;
+        }
+        if (splitIdx === -1 || splitIdx < maxLength * 0.35) {
+            splitIdx = remaining.lastIndexOf(' ', maxLength);
+        }
+        if (splitIdx === -1) {
+            splitIdx = maxLength;
+        }
+        chunks.push(remaining.substring(0, splitIdx).trim());
+        remaining = remaining.substring(splitIdx).trim();
+    }
+    return chunks.filter(c => c.length > 0);
+}
+
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
-    if (!recipientPhone) {
-        console.error("[sendWhatsAppMessage] No recipientPhone provided.");
+    if (!recipientPhone || !textMessage) {
+        console.error("[sendWhatsAppMessage] Missing recipientPhone or textMessage.");
         return;
     }
+
+    const chunks = splitMessageIntoChunks(textMessage, 4000);
+    for (let i = 0; i < chunks.length; i++) {
+        await sendSingleWhatsAppChunk(recipientPhone, chunks[i], i + 1, chunks.length);
+        if (i < chunks.length - 1) await sleep(600);
+    }
+}
+
+async function sendSingleWhatsAppChunk(recipientPhone, textMessage, chunkNum = 1, totalChunks = 1) {
 
     const recipientStr = recipientPhone.toString().trim();
     // BSUID handles (e.g. MY.1766392011328199) contain a period or letters.
@@ -2381,21 +2420,30 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
 }
 
 async function sendInstagramDM(recipientId, textMessage) {
+    if (!recipientId || !textMessage) return;
+    const chunks = splitMessageIntoChunks(textMessage, 950);
     const url = `https://graph.facebook.com/v21.0/me/messages?access_token=${META_IG_ACCESS_TOKEN}`;
-    const payload = {
-        recipient: { id: recipientId },
-        message: { text: textMessage }
-    };
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-            cacheSet(`ai_sent_${recipientId}`, "true", 5);
-            await axios.post(url, payload);
-            console.log(`[Sent] Instagram DM to ${recipientId}`);
-            return;
-        } catch (error) {
-            console.error(`Instagram Send Error (Attempt ${attempt}/3):`, error.response ? JSON.stringify(error.response.data) : error.message);
-            if (attempt === 3) return;
-            await new Promise(r => setTimeout(r, 2000));
+
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const payload = {
+            recipient: { id: recipientId },
+            message: { text: chunk }
+        };
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                cacheSet(`ai_sent_${recipientId}`, "true", 5);
+                await axios.post(url, payload);
+                console.log(`[Sent] Instagram DM chunk ${i + 1}/${chunks.length} to ${recipientId}`);
+                break;
+            } catch (error) {
+                console.error(`Instagram Send Error (Attempt ${attempt}/3, chunk ${i + 1}/${chunks.length}):`, error.response ? JSON.stringify(error.response.data) : error.message);
+                if (attempt === 3) break;
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+        if (i < chunks.length - 1) {
+            await sleep(800);
         }
     }
 }
