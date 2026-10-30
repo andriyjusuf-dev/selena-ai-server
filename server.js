@@ -535,6 +535,87 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
     }
 }
 
+
+// ==========================================
+// 1.4 DEEPSEEK SEARCH & TIDE/WEATHER FORECAST
+// ==========================================
+async function searchDeepSeekTides(date) {
+    if (!DEEPSEEK_API_KEY) {
+        return "DeepSeek API key not configured for live search.";
+    }
+    const targetDate = (date || new Date().toISOString().split("T")[0]).trim();
+    console.log(`[DeepSeek Search] Fetching live ocean tide chart for Nusa Penida on ${targetDate}...`);
+    try {
+        const query = `Nusa Penida tide chart tides ${targetDate}`;
+        const searchRes = await axios.post("https://api.deepseek.com/v1/tools/search", {
+            query: query,
+            count: 3,
+            need_content: false
+        }, {
+            headers: {
+                "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            timeout: 10000
+        });
+
+        const results = searchRes.data?.results || [];
+        if (results.length === 0) {
+            return `No live tide data found for ${targetDate}. Please assume normal dive operations or confirm with boat captain.`;
+        }
+
+        let summary = `🌊 Live Nusa Penida Tide Chart for ${targetDate}:\n`;
+        results.forEach((r, idx) => {
+            summary += `[Source ${idx + 1}: ${r.title}]\n${r.snippet || r.summary || ""}\n\n`;
+        });
+        summary += `CRITICAL OPERATIONAL RULES FOR SELENA:
+1) Morning dive slot (Meeting 7:00 AM, Boat leaving 8:00 AM +/- 30 min): Requires water level >= 0.5m OR tide must be actively rising during that 1-hour window so the boat can float out.
+2) Afternoon dive slot (2:30 PM): Check afternoon water level/trend.
+3) If tide allows boat departure, warmly confirm the schedule! If tide is trapped below 0.5m and falling, politely suggest adjusting the departure time or choosing the alternate slot.`;
+        return summary.trim();
+    } catch (e) {
+        console.error("[DeepSeek Tide Search Error]", e.response ? e.response.data : e.message);
+        return `Tide search error: ${e.message}`;
+    }
+}
+
+async function searchDeepSeekWeather(date) {
+    if (!DEEPSEEK_API_KEY) {
+        return "DeepSeek API key not configured for live search.";
+    }
+    const targetDate = (date || new Date().toISOString().split("T")[0]).trim();
+    console.log(`[DeepSeek Search] Fetching live weather forecast for Nusa Penida on ${targetDate}...`);
+    try {
+        const query = `Nusa Penida Bali weather forecast rain wind sea condition ${targetDate}`;
+        const searchRes = await axios.post("https://api.deepseek.com/v1/tools/search", {
+            query: query,
+            count: 3,
+            need_content: false
+        }, {
+            headers: {
+                "Authorization": `Bearer ${DEEPSEEK_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            timeout: 10000
+        });
+
+        const results = searchRes.data?.results || [];
+        if (results.length === 0) {
+            return `No live weather data found for ${targetDate}.`;
+        }
+
+        let summary = `🌤️ Live Nusa Penida Weather Forecast for ${targetDate}:\n`;
+        results.forEach((r, idx) => {
+            summary += `[Source ${idx + 1}: ${r.title}]\n${r.snippet || r.summary || ""}\n\n`;
+        });
+        summary += `CRITICAL SALES RULE FOR SELENA: We STILL GO DIVING EVEN IF IT RAINS! Rain does not affect underwater visibility or safety. Reassure the guest warmly and encourage them to book. Sales is very important; always adhere to the Supabase rules and close the sale.`;
+        return summary.trim();
+    } catch (e) {
+        console.error("[DeepSeek Weather Search Error]", e.response ? e.response.data : e.message);
+        return `Weather search error: ${e.message}`;
+    }
+}
+
 async function executeTelegramTool(funcName, args) {
     if (funcName === 'check_recent_bookings') {
         console.log(`[Telegram Tool] AI is running check_recent_bookings`);
@@ -545,6 +626,12 @@ async function executeTelegramTool(funcName, args) {
         console.log(`[Telegram Tool] AI is running list_rules`);
         const { data, error } = await supabase.from('rules').select('rule_text').order('id', { ascending: true });
         return { rules: data || [], error: error ? error.message : null };
+    } else if (funcName === 'search_nusa_penida_tide') {
+        const tideResult = await searchDeepSeekTides(args.date);
+        return { tide_data: tideResult };
+    } else if (funcName === 'search_nusa_penida_weather') {
+        const weatherResult = await searchDeepSeekWeather(args.date);
+        return { weather_data: weatherResult };
     } else if (funcName === 'add_rule') {
         console.log(`[Telegram Tool] AI is running add_rule with text: ${args.rule_text}`);
         const { error } = await supabase.from('rules').insert([{ rule_text: args.rule_text }]);
@@ -653,7 +740,9 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
-        { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } }
+        { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. Use to verify morning (7:00 AM meeting / 8:00 AM departure +/- 30m) or afternoon (2:30 PM) boat floatability (min 0.5m or rising tide).", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
+        { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
     ];
 
     let messages = [
@@ -1676,6 +1765,22 @@ CRITICAL AVAILABILITY PRIVACY RULE (DIVES & HOTEL): When confirming availability
 
     basePrompt += ``
 
+    basePrompt += `--- DIVE SCHEDULE, TIDES & BOAT FLOATABILITY ('search_nusa_penida_tide') ---\n`;
+    basePrompt += `DIVE SCHEDULE OPTIONS:
+1) Morning Dive: 7:00 AM Meeting / 8:00 AM Boat Leaving (+/- 30 mins) - 1 Dive.
+2) Afternoon Dive: 2:30 PM - 1 Dive.
+
+CRITICAL TIDE REQUIREMENT FOR MORNING & AFTERNOON SLOTS:
+- Before confirming or booking morning or afternoon dive slots, you MUST call 'search_nusa_penida_tide' with the requested date!
+- Boat Departure Rule: The morning departure (meeting 7:00 AM, boat leaving 8:00 AM +/- 30 min) is ONLY feasible if:
+  a) The tide in Nusa Penida hits a MINIMUM water level of 0.5m at departure time, OR
+  b) At the time of leaving, the tide is actively GOING UP (rising) during that 1-hour window, allowing the boat to float out.
+- For morning and afternoon dive booking inquiries, Selena must invoke the DeepSeek search function ('search_nusa_penida_tide').
+- If the tide condition is met, warmly confirm the schedule! If the water is too shallow (< 0.5m) and falling, politely propose the safe time window or suggest the afternoon slot (2:30 PM).
+
+WEATHER INQUIRIES & SALES MANDATE ('search_nusa_penida_weather'):
+- If a guest asks about the weather in Nusa Penida, call 'search_nusa_penida_weather' to get live conditions.
+- CRITICAL SALES RULE: WE STILL GO DIVING EVEN IF IT RAINS! Rain does not compromise dive safety or underwater marine beauty. Never discourage a customer due to rain. Always follow the Supabase sales rules, answer enthusiastically, and prioritize securing the booking.\n\n`;
     basePrompt += `--- DIVE BOOKINGS ('manage_sheet_booking') ---\n`;
     basePrompt += `Use 'ADD', 'UPDATE', 'REMOVE'. RULES: "[Name] [Product] [Deposit]". Products: TD, FD [License], [Product]C. Deposit: Paid=DPO, No=?. MULTIPLE GUESTS: MUST separate each guest with a semicolon (;). Add special requests at the end after a pipe (|).\n`;
     basePrompt += `Ex: "GuestName TD DPO; OtherName RESCC ? | specreq: none"\n`;
@@ -1778,7 +1883,9 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
-        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
+        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. Use to verify morning (7:00 AM meeting / 8:00 AM departure +/- 30m) or afternoon (2:30 PM) boat floatability (min 0.5m or rising tide).", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
+        { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
     ];
 
     let retries = 3;
@@ -1843,6 +1950,10 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                         } else { resultStr = "GOOGLE_SHEET_API_URL not set."; }
                     } else if (funcName === "manage_hotel_booking" || funcName === "search_hotel_booking") {
                         resultStr = await handleHotelBooking(args, funcName, "QWEN");
+                    } else if (funcName === "search_nusa_penida_tide") {
+                        resultStr = await searchDeepSeekTides(args.date);
+                    } else if (funcName === "search_nusa_penida_weather") {
+                        resultStr = await searchDeepSeekWeather(args.date);
                     }
 
                     newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
@@ -1899,7 +2010,9 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
-        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } }
+        { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. Use to verify morning (7:00 AM meeting / 8:00 AM departure +/- 30m) or afternoon (2:30 PM) boat floatability (min 0.5m or rising tide).", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
+        { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
     ];
 
     let retries = 3;
@@ -1963,6 +2076,10 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
                         } else { resultStr = "GOOGLE_SHEET_API_URL not set."; }
                     } else if (funcName === "manage_hotel_booking" || funcName === "search_hotel_booking") {
                         resultStr = await handleHotelBooking(args, funcName, "DEEPSEEK");
+                    } else if (funcName === "search_nusa_penida_tide") {
+                        resultStr = await searchDeepSeekTides(args.date);
+                    } else if (funcName === "search_nusa_penida_weather") {
+                        resultStr = await searchDeepSeekWeather(args.date);
                     }
 
                     newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
@@ -2088,6 +2205,27 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
             },
             required: ["search_query"]
         }
+    }, {
+        name: "search_nusa_penida_tide",
+        description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. Use to verify morning (7:00 AM meeting / 8:00 AM departure +/- 30m) or afternoon (2:30 PM) boat floatability (min 0.5m or rising tide).",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                date: { type: "STRING", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" },
+                time_slot: { type: "STRING", description: "Dive slot: 'morning_7am', 'afternoon_230pm', or 'all_day'" }
+            },
+            required: ["date"]
+        }
+    }, {
+        name: "search_nusa_penida_weather",
+        description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.",
+        parameters: {
+            type: "OBJECT",
+            properties: {
+                date: { type: "STRING", description: "Target date in YYYY-MM-DD format" }
+            },
+            required: ["date"]
+        }
     }];
 
     if (senderId === 'KIOSK_DESK_1') {
@@ -2160,6 +2298,12 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                         console.log(`[Gemini Tool] Executing ${call.name}: ${call.args?.action || 'SEARCH'} | Args: ${JSON.stringify(call.args)}`);
                         const hotelResult = await handleHotelBooking(call.args, call.name, "GEMINI");
                         funcResParts.push({ functionResponse: { name: call.name, response: { status: "success", message: hotelResult } } });
+                    } else if (call.name === 'search_nusa_penida_tide') {
+                        const tideRes = await searchDeepSeekTides(call.args?.date);
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: "success", message: tideRes } } });
+                    } else if (call.name === 'search_nusa_penida_weather') {
+                        const weatherRes = await searchDeepSeekWeather(call.args?.date);
+                        funcResParts.push({ functionResponse: { name: call.name, response: { status: "success", message: weatherRes } } });
                     } else if (call.name === 'search_sheet_booking') {
                         console.log(`[Gemini Tool] AI is running ${call.name}`);
                         let sheetStatus = "error";
