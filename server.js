@@ -714,6 +714,26 @@ async function executeTelegramTool(funcName, args) {
             }
         }
         return { status: sheetStatus, message: sheetMessage };
+    } else if (funcName === 'manage_sheet_booking') {
+        console.log(`[Telegram Tool] AI is running manage_sheet_booking for staff:`, JSON.stringify(args));
+        let sheetStatus = "error";
+        let sheetMessage = "GOOGLE_SHEET_API_URL not configured in backend.";
+        if (process.env.GOOGLE_SHEET_API_URL) {
+            try {
+                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, args);
+                sheetStatus = "success";
+                if (typeof sheetRes.data === 'string' && sheetRes.data.includes('<html')) {
+                    sheetMessage = "Google Apps Script error: returned HTML.";
+                } else {
+                    sheetMessage = sheetRes.data.status || sheetRes.data.message || (typeof sheetRes.data === 'object' ? JSON.stringify(sheetRes.data) : sheetRes.data) || "Completed";
+                }
+                console.log(`[Google Sheets Telegram] Response: ${sheetMessage}`);
+            } catch (err) {
+                console.error("[Google Sheets Telegram Error]", err.message);
+                sheetMessage = err.message;
+            }
+        }
+        return { status: sheetStatus, message: sheetMessage };
     } else if (funcName === 'manage_hotel_booking' || funcName === 'search_hotel_booking') {
         console.log(`[Telegram Tool] AI is running ${funcName} for staff:`, JSON.stringify(args));
         const hotelResult = await handleHotelBooking(args, funcName, "TELEGRAM (Staff/Ketut)");
@@ -722,15 +742,130 @@ async function executeTelegramTool(funcName, args) {
     return { status: "error", message: "Unknown tool function." };
 }
 
-// NEW QWEN TELEGRAM FUNCTION
-async function callQwenTelegram(text) {
+// ==========================================
+// TELEGRAM MEMORY & PROMPT HELPERS
+// ==========================================
+const telegramMemoryCache = new Map(); // chatId -> [{ role, text, timestamp }]
+
+async function getTelegramHistory(chatId, format = 'openai', limit = 10) {
+    if (!chatId) return [];
+    const tgId = `telegram_${chatId}`;
+    try {
+        if (supabase) {
+            const { data, error } = await supabase
+                .from('conversations')
+                .select('role, message_text')
+                .eq('phone_number', tgId)
+                .order('created_at', { ascending: false })
+                .limit(limit);
+
+            if (!error && data && data.length > 0) {
+                const ordered = [...data].reverse();
+                if (format === 'gemini') {
+                    return ordered.map(row => ({
+                        role: row.role === 'assistant' ? 'model' : row.role,
+                        parts: [{ text: row.message_text }]
+                    }));
+                } else {
+                    return ordered.map(row => ({
+                        role: row.role === 'model' ? 'assistant' : row.role,
+                        content: row.message_text
+                    }));
+                }
+            }
+        }
+    } catch (e) {
+        console.error("[Telegram History Supabase Error]", e.message);
+    }
+
+    // In-memory sliding window fallback
+    const memList = telegramMemoryCache.get(chatId) || [];
+    const recent = memList.slice(-limit);
+    if (format === 'gemini') {
+        return recent.map(m => ({
+            role: m.role === 'assistant' ? 'model' : m.role,
+            parts: [{ text: m.text }]
+        }));
+    } else {
+        return recent.map(m => ({
+            role: m.role === 'model' ? 'assistant' : m.role,
+            content: m.text
+        }));
+    }
+}
+
+async function appendTelegramHistory(chatId, role, text) {
+    if (!chatId || !text) return;
+    const tgId = `telegram_${chatId}`;
+    const cleanRole = role === 'assistant' ? 'model' : role;
+
+    // Save to in-memory cache
+    if (!telegramMemoryCache.has(chatId)) {
+        telegramMemoryCache.set(chatId, []);
+    }
+    const memList = telegramMemoryCache.get(chatId);
+    memList.push({ role: cleanRole, text, timestamp: Date.now() });
+    if (memList.length > 20) memList.shift();
+
+    // Persist to Supabase
+    try {
+        if (supabase) {
+            const { error } = await supabase.from('conversations').insert([
+                { phone_number: tgId, role: cleanRole, message_text: text }
+            ]);
+            if (error) console.error("[Supabase appendTelegramHistory Error]", error.message);
+        }
+    } catch (e) {
+        console.error("[Supabase appendTelegramHistory Exception]", e.message);
+    }
+}
+
+async function clearTelegramHistory(chatId) {
+    if (!chatId) return;
+    const tgId = `telegram_${chatId}`;
+    telegramMemoryCache.delete(chatId);
+    try {
+        if (supabase) {
+            await supabase.from('conversations').delete().eq('phone_number', tgId);
+        }
+    } catch (e) {
+        console.error("[clearTelegramHistory Error]", e.message);
+    }
+}
+
+function formatGeminiHistory(rawHistory) {
+    if (!rawHistory || rawHistory.length === 0) return [];
+    const valid = [];
+    let lastRole = null;
+    for (const msg of rawHistory) {
+        const role = msg.role === 'assistant' ? 'model' : msg.role;
+        const text = (msg.parts && msg.parts[0] && msg.parts[0].text) ? msg.parts[0].text : "";
+        if (!text.trim()) continue;
+        if (role !== lastRole) {
+            valid.push({ role, parts: [{ text }] });
+            lastRole = role;
+        } else if (valid.length > 0) {
+            valid[valid.length - 1].parts[0].text += "\n" + text;
+        }
+    }
+    while (valid.length > 0 && valid[0].role === 'model') {
+        valid.shift();
+    }
+    while (valid.length > 0 && valid[valid.length - 1].role === 'user') {
+        valid.pop();
+    }
+    return valid;
+}
+
+async function buildTelegramPrompt() {
     const systemPrompt = await buildSystemPrompt(false);
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.\n\nHOTEL & ROOM MANAGEMENT (KETUT / STAFF OVERRIDE):
-You have direct access to live Cloudbeds PMS and Google Sheet for hotel operations:
-- 'manage_hotel_booking': Use action='CHECK_CAPACITY' (dates) to check room availability, action='ADD' to book a room, action='REMOVE' or 'CANCEL' to cancel a booking, or 'UPDATE'.
-- 'search_hotel_booking': Use to find a guest or reservation.
-Note: Currently only 8 Deluxe Room Garden View rooms are active (Dorm is inactive for now).
-Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks you to check availability, make a booking, cancel a booking, or check guest details, you MUST invoke 'manage_hotel_booking' or 'search_hotel_booking' directly! Do NOT pretend or make up an answer.`;
+    return `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, diving board sheet, hotel rooms, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database and operations tools (manage_sheet_booking, search_sheet_booking, manage_hotel_booking, search_hotel_booking, check_recent_bookings, add_rule, delete_rule, list_rules, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add/update/remove a dive booking on the diving board sheet, check room capacity, book a hotel room, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.\n\nDIVING BOARD & DIVE BOOKING MANAGEMENT (STAFF OVERRIDE):\nYou have direct access to the live diving board Google Sheet ('manage_sheet_booking', 'search_sheet_booking'):\n- If a staff member asks you to add, check, update, or remove a booking on the diving board sheet, you MUST invoke 'manage_sheet_booking' directly!\n- 'manage_sheet_booking' Actions:\n  * 'ADD': Add a booking/divers to the diving board sheet for a specific date.\n  * 'UPDATE': Update an existing booking (e.g. date change, pax change, or notes).\n  * 'REMOVE': Remove or cancel a booking from the diving board sheet.\n  * 'SEARCH': Look up a customer across the diving sheet.\n  * 'CHECK_CAPACITY': Check available diver capacity on a target date.\n- Formatting for 'new_text' on ADD / UPDATE: \"[Name] [Product] [Deposit]\"\n  * Products: TD (Try Dive / Discover Scuba), FD [License/Level] (Fun Dive, e.g. FD OW, FD AOW), [Product]C (Course, e.g. OWC, AOWC), SNO (Snorkeling).\n  * Deposit: 'DPO' (Deposit Paid Online / confirmed) or '?' (unpaid / pending).\n  * Multiple divers: MUST separate each diver with a semicolon (;).\n  * Special requests: Add at the end after a pipe (|), e.g. '| specreq: vegetarian lunch'.\n  * Example: action='ADD', target_date='2026-11-05', new_text='John Doe TD DPO; Jane Doe TD DPO | specreq: vegetarian'.\n  * Target date MUST be in YYYY-MM-DD format.\n\nHOTEL & ROOM MANAGEMENT (KETUT / STAFF OVERRIDE):\nYou have direct access to live Cloudbeds PMS and Google Sheet for hotel operations:\n- 'manage_hotel_booking': Use action='CHECK_CAPACITY' (dates) to check room availability, action='ADD' to book a room, action='REMOVE' or 'CANCEL' to cancel a booking, or 'UPDATE'.\n- 'search_hotel_booking': Use to find a guest or reservation.\nNote: Currently only 8 Deluxe Room Garden View rooms are active (Dorm is inactive for now).\nKetut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks you to check availability, make a booking, cancel a booking, or check guest details, you MUST invoke 'manage_hotel_booking' or 'search_hotel_booking' directly! Do NOT pretend or make up an answer.`;
+}
+
+// NEW QWEN TELEGRAM FUNCTION
+async function callQwenTelegram(text, chatId = TELEGRAM_CHAT_ID) {
+    const telegramPrompt = await buildTelegramPrompt();
+    const history = await getTelegramHistory(chatId, 'openai', 10);
 
     const qwenTelegramTools = [
         { type: "function", function: { name: "check_recent_bookings", description: "Look up recent bookings in the database.", parameters: { type: "object", properties: { limit: { type: "integer" } } } } },
@@ -740,7 +875,8 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
         { type: "function", function: { name: "pause_customer", description: "Pause the AI for a specific customer for a given number of minutes.", parameters: { type: "object", properties: { phone_number: { type: "string" }, duration_minutes: { type: "integer" } }, required: ["phone_number", "duration_minutes"] } } },
         { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
-        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "manage_sheet_booking", description: "Manage live diving board sheet schedule. Use 'ADD' to add divers/bookings to the diving board sheet, 'UPDATE' to modify existing bookings, 'REMOVE' to cancel/remove, 'SEARCH' to find divers, or 'CHECK_CAPACITY'.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the diving booking in YYYY-MM-DD format (e.g. '2026-11-05'). Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the diving board sheet cell. Required for ADD and UPDATE. Follow format: '[Name] [Product] [Deposit]' (e.g. 'John Doe TD DPO; Jane Doe TD DPO | specreq: vegetarian'). Multiple guests separated by semicolon (;)." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "Optional target month and year (e.g. 'November 2026')." } }, required: ["action"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet diving schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
@@ -749,6 +885,7 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
 
     let messages = [
         { role: 'system', content: telegramPrompt },
+        ...history,
         { role: 'user', content: text }
     ];
 
@@ -786,14 +923,9 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
     return null;
 }
 
-async function callDeepSeekTelegram(text) {
-    const systemPrompt = await buildSystemPrompt(false);
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.\n\nHOTEL & ROOM MANAGEMENT (KETUT / STAFF OVERRIDE):
-You have direct access to live Cloudbeds PMS and Google Sheet for hotel operations:
-- 'manage_hotel_booking': Use action='CHECK_CAPACITY' (dates) to check room availability, action='ADD' to book a room, action='REMOVE' or 'CANCEL' to cancel a booking, or 'UPDATE'.
-- 'search_hotel_booking': Use to find a guest or reservation.
-Note: Currently only 8 Deluxe Room Garden View rooms are active (Dorm is inactive for now).
-Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks you to check availability, make a booking, cancel a booking, or check guest details, you MUST invoke 'manage_hotel_booking' or 'search_hotel_booking' directly! Do NOT pretend or make up an answer.`;
+async function callDeepSeekTelegram(text, chatId = TELEGRAM_CHAT_ID) {
+    const telegramPrompt = await buildTelegramPrompt();
+    const history = await getTelegramHistory(chatId, 'openai', 10);
 
     const deepseekTelegramTools = [
         { type: "function", function: { name: "check_recent_bookings", description: "Look up recent bookings in the database.", parameters: { type: "object", properties: { limit: { type: "integer" } } } } },
@@ -803,13 +935,17 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
         { type: "function", function: { name: "pause_customer", description: "Pause the AI for a specific customer for a given number of minutes.", parameters: { type: "object", properties: { phone_number: { type: "string" }, duration_minutes: { type: "integer" } }, required: ["phone_number", "duration_minutes"] } } },
         { type: "function", function: { name: "unpause_customer", description: "Unpause the AI for a specific customer.", parameters: { type: "object", properties: { phone_number: { type: "string" } }, required: ["phone_number"] } } },
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
-        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "manage_sheet_booking", description: "Manage live diving board sheet schedule. Use 'ADD' to add divers/bookings to the diving board sheet, 'UPDATE' to modify existing bookings, 'REMOVE' to cancel/remove, 'SEARCH' to find divers, or 'CHECK_CAPACITY'.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the diving booking in YYYY-MM-DD format (e.g. '2026-11-05'). Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the diving board sheet cell. Required for ADD and UPDATE. Follow format: '[Name] [Product] [Deposit]' (e.g. 'John Doe TD DPO; Jane Doe TD DPO | specreq: vegetarian'). Multiple guests separated by semicolon (;)." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "Optional target month and year (e.g. 'November 2026')." } }, required: ["action"] } } },
+        { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet diving schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
-        { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } }
+        { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } },
+        { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
+        { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
     ];
 
     let messages = [
         { role: 'system', content: telegramPrompt },
+        ...history,
         { role: 'user', content: text }
     ];
 
@@ -853,18 +989,17 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
     return null;
 }
 
-async function callGeminiTelegram(text) {
-    const systemPrompt = await buildSystemPrompt();
-    const telegramPrompt = `${systemPrompt}\n\n[SYSTEM OVERRIDE]: You are currently talking to your own internal staff team in a private Telegram group. They are asking you a question about the dive shop, bookings, or your instructions. Answer them helpfully, clearly, and concisely. Do NOT try to sell them anything.\n\nCRITICAL INSTRUCTION: You have access to database tools (add_rule, delete_rule, list_rules, check_recent_bookings, pause_customer, unpause_customer, message_customer). If a staff member asks you to check bookings, add a rule, or message/pause/unpause a customer, you MUST actually invoke the corresponding tool function! Do NOT just pretend or make up an answer.\n\nHOTEL & ROOM MANAGEMENT (KETUT / STAFF OVERRIDE):
-You have direct access to live Cloudbeds PMS and Google Sheet for hotel operations:
-- 'manage_hotel_booking': Use action='CHECK_CAPACITY' (dates) to check room availability, action='ADD' to book a room, action='REMOVE' or 'CANCEL' to cancel a booking, or 'UPDATE'.
-- 'search_hotel_booking': Use to find a guest or reservation.
-Note: Currently only 8 Deluxe Room Garden View rooms are active (Dorm is inactive for now).
-Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks you to check availability, make a booking, cancel a booking, or check guest details, you MUST invoke 'manage_hotel_booking' or 'search_hotel_booking' directly! Do NOT pretend or make up an answer.`;
+async function callGeminiTelegram(text, chatId = TELEGRAM_CHAT_ID) {
+    const telegramPrompt = await buildTelegramPrompt();
+    const rawHistory = await getTelegramHistory(chatId, 'gemini', 10);
+    const validHistory = formatGeminiHistory(rawHistory);
 
     const payload = {
         system_instruction: { parts: [{ text: telegramPrompt }] },
-        contents: [{ role: "user", parts: [{ text: text }] }],
+        contents: [
+            ...validHistory,
+            { role: "user", parts: [{ text: text }] }
+        ],
         tools: [{
             function_declarations: [{
                 name: "check_recent_bookings",
@@ -931,6 +1066,22 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
                     required: ["phone_number", "instruction"]
                 }
             }, {
+                name: "manage_sheet_booking",
+                description: "Manage live diving board sheet schedule. Use 'ADD' to add divers/bookings to the diving board sheet, 'UPDATE' to modify existing bookings, 'REMOVE' to cancel/remove, 'SEARCH' to find divers, or 'CHECK_CAPACITY'.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        action: { type: "STRING", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" },
+                        target_date: { type: "STRING", description: "The date of the diving booking in YYYY-MM-DD format (e.g. '2026-11-05'). Required for ADD, UPDATE, and CHECK_CAPACITY." },
+                        new_text: { type: "STRING", description: "The formatted string to write into the diving board sheet cell. Required for ADD and UPDATE. Follow format: '[Name] [Product] [Deposit]'. Multiple guests separated by semicolon (;)." },
+                        old_date: { type: "STRING", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." },
+                        old_text_match: { type: "STRING", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE." },
+                        search_query: { type: "STRING", description: "Customer name or string to search for across the sheet." },
+                        target_month: { type: "STRING", description: "Optional target month and year (e.g. 'November 2026')." }
+                    },
+                    required: ["action"]
+                }
+            }, {
                 name: "search_sheet_booking",
                 description: "Search the live Google Sheet schedule for a customer's booking. ALWAYS use this if staff asks to check the sheet.",
                 parameters: {
@@ -975,6 +1126,27 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
                     },
                     required: ["search_query"]
                 }
+            }, {
+                name: "search_nusa_penida_tide",
+                description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        date: { type: "STRING", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" },
+                        time_slot: { type: "STRING", description: "Dive slot to verify" }
+                    },
+                    required: ["date"]
+                }
+            }, {
+                name: "search_nusa_penida_weather",
+                description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        date: { type: "STRING", description: "Target date in YYYY-MM-DD format" }
+                    },
+                    required: ["date"]
+                }
             }]
         }]
     };
@@ -998,6 +1170,7 @@ Ketut Darmaja (@ketutdarmaja) is the Hotel Manager. If Ketut or any staff asks y
                     const secondPayload = {
                         system_instruction: { parts: [{ text: telegramPrompt }] },
                         contents: [
+                            ...validHistory,
                             { role: "user", parts: [{ text: text }] },
                             response.data.candidates[0].content,
                             funcResCtx
@@ -1057,7 +1230,19 @@ app.post('/telegram-webhook', async (req, res) => {
                     return;
                 }
 
-                console.log(`[Telegram] Question from staff: ${cleanText}`);
+                if (cleanText.toLowerCase() === '!reset' || cleanText.toLowerCase() === '!clear') {
+                    await clearTelegramHistory(chatId);
+                    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                        chat_id: chatId,
+                        text: "🧠 Conversation memory has been cleared for this chat."
+                    });
+                    return;
+                }
+
+                const senderName = update.message.from ? (update.message.from.first_name || update.message.from.username || "Staff") : "Staff";
+                const messageToProcess = isPrivate ? cleanText : `[${senderName}]: ${cleanText}`;
+
+                console.log(`[Telegram] Question from ${senderName} (${chatId}): ${cleanText}`);
 
                 try {
                     await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendChatAction`, {
@@ -1067,14 +1252,17 @@ app.post('/telegram-webhook', async (req, res) => {
 
                     let reply = "";
                     if (ACTIVE_AI === 'qwen') {
-                        reply = await callQwenTelegram(cleanText);
+                        reply = await callQwenTelegram(messageToProcess, chatId);
                     } else if (ACTIVE_AI === 'deepseek') {
-                        reply = await callDeepSeekTelegram(cleanText);
+                        reply = await callDeepSeekTelegram(messageToProcess, chatId);
                     } else {
-                        reply = await callGeminiTelegram(cleanText);
+                        reply = await callGeminiTelegram(messageToProcess, chatId);
                     }
 
                     if (reply) {
+                        await appendTelegramHistory(chatId, 'user', messageToProcess);
+                        await appendTelegramHistory(chatId, 'model', reply);
+
                         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
                             chat_id: chatId,
                             text: reply
