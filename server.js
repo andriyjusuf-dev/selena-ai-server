@@ -183,6 +183,37 @@ function normalizeHotelDates(rawDates, rawStart, rawEnd) {
     return { startDate: sDate, endDate: eDate, target_dates: datesArr, nights };
 }
 
+// Helper: Check if two guest names refer to the same person (handles dummy 'Sanctum' last name, titles, extra tokens)
+function isSameGuest(name1, name2) {
+    if (!name1 || !name2) return false;
+    const clean = s => s.toLowerCase()
+        .replace(/\b(mr|mrs|ms|dr|prof)\b\.?/gi, '')
+        .replace(/\(.*?\)/g, '')
+        .replace(/[^a-z0-9\s]/gi, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter(t => t.length > 1);
+
+    const t1 = clean(name1);
+    const t2 = clean(name2);
+    if (t1.length === 0 || t2.length === 0) return false;
+
+    // Filter out known placeholder last name "sanctum"
+    const real1 = t1.filter(t => t !== 'sanctum');
+    const real2 = t2.filter(t => t !== 'sanctum');
+    if (real1.length === 0 || real2.length === 0) return false;
+
+    // If both have full names (first + last):
+    if (real1.length > 1 && real2.length > 1) {
+        const common = real1.filter(t => real2.includes(t));
+        if (common.length >= 2) return true;
+        return false;
+    }
+
+    // If at least one has only a first name:
+    return real1[0] === real2[0];
+}
+
 async function handleHotelBooking(args, funcName = "manage_hotel_booking", callerSource = "AI") {
     const action = (funcName === "search_hotel_booking" ? "SEARCH" : (args.action || "SEARCH")).toUpperCase();
     console.log(`[Hotel Manager] Executing ${action} by ${callerSource} | Args:`, JSON.stringify(args));
@@ -227,7 +258,7 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
                 const requestedRooms = Number(args.rooms_count) || 1;
                 if (availableUnits >= requestedRooms && availableUnits > 0) {
                     if (callerSource && callerSource.includes("TELEGRAM")) {
-                        let pricingInfo = totalRate 
+                        let pricingInfo = totalRate
                             ? `Cloudbeds PMS Rate: IDR ${totalRate.toLocaleString()} total (~IDR ${avgNightlyRate.toLocaleString()}/night for ${nights} night${nights > 1 ? 's' : ''}) (OTA/Channel rate).`
                             : `Seasonal dynamic pricing applies in Cloudbeds.`;
                         return `✅ Deluxe Room Garden View: ${availableUnits} room(s) available for check-in ${startDate} to check-out ${endDate} (${nights} night${nights > 1 ? 's' : ''}). ${pricingInfo} Room features: King Bed + Daybed lounge sofa, up to 3 guests.`;
@@ -320,10 +351,16 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
                 return "❌ BOOKING REJECTED: Hotel rooms can ONLY be reserved after the customer has paid the deposit online. Please send the payment link/instructions and obtain online deposit confirmation before booking.";
             }
 
-            const fullName = (args.guest_name || args.customer_name || "Guest").trim();
-            const nameParts = fullName.split(" ");
-            const firstName = nameParts[0] || "Guest";
-            const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "Sanctum";
+            const fullName = (args.guest_name || args.customer_name || "").trim();
+            const nameParts = fullName.split(/\s+/).filter(Boolean);
+
+            if (nameParts.length < 2) {
+                console.warn(`[Hotel Booking Guardrail] Blocked room reservation for "${fullName}" - Missing last name.`);
+                return "❌ BOOKING REJECTED: Full name required. Both First Name and Last Name must be provided for hotel room reservations in Cloudbeds (e.g. 'Geoffrey Menardo'). Never use or invent a placeholder last name. Please ask the guest for their last name before booking.";
+            }
+
+            const firstName = nameParts[0];
+            const lastName = nameParts.slice(1).join(" ");
             const guestEmail = args.guest_email || args.email || "booking@sanctumnusapenida.com";
             const guestPhone = args.guest_phone || args.phone_number || "+6282359213114";
             const quantity = Number(args.rooms_count || args.quantity || 1);
@@ -334,6 +371,88 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
 
             if (!startDate || !endDate) {
                 return "Failed: Missing check-in and check-out dates for hotel booking.";
+            }
+
+            // ==========================================
+            // PRE-BOOKING DOUBLE-BOOKING & COLLISION GUARD
+            // ==========================================
+            try {
+                const checkInFromDate = new Date(startDate + "T00:00:00Z");
+                checkInFromDate.setUTCDate(checkInFromDate.getUTCDate() - 3);
+                const checkInFrom = checkInFromDate.toISOString().split("T")[0];
+
+                const existingCheckRes = await axios.get("https://api.cloudbeds.com/api/v1.1/getReservations", {
+                    headers: { "x-api-key": CLOUDBEDS_API_KEY },
+                    params: {
+                        propertyID: CLOUDBEDS_PROPERTY_ID,
+                        status: "confirmed",
+                        checkInFrom: checkInFrom,
+                        limit: 100
+                    }
+                });
+
+                const confirmedBookings = existingCheckRes.data?.data || [];
+                const duplicate = confirmedBookings.find(r => {
+                    const samePerson = isSameGuest(r.guestName, fullName);
+                    const datesOverlap = (startDate < r.endDate && endDate > r.startDate);
+                    return samePerson && datesOverlap;
+                });
+
+                if (duplicate) {
+                    console.warn(`[Duplicate Guard] Detected existing reservation [CB#${duplicate.reservationID}] for "${duplicate.guestName}" (${duplicate.startDate} to ${duplicate.endDate}) while attempting to book "${fullName}" (${startDate} to ${endDate})`);
+
+                    const isExactDates = duplicate.startDate === startDate && duplicate.endDate === endDate;
+                    const existingNights = Math.max(1, Math.round((new Date(duplicate.endDate) - new Date(duplicate.startDate)) / (1000 * 60 * 60 * 24)));
+                    const isOneNightPlaceholder = duplicate.startDate === startDate && existingNights === 1 && nights > 1;
+                    const isAlreadyLongerStay = duplicate.startDate === startDate && existingNights > 1 && nights === 1;
+
+                    if (isExactDates) {
+                        return `⚠️ DUPLICATE PREVENTED: Guest ${fullName} already has a confirmed Cloudbeds reservation [CB#${duplicate.reservationID}] for ${startDate} to ${endDate}. Skipped creating a duplicate.`;
+                    }
+
+                    if (isAlreadyLongerStay) {
+                        return `⚠️ DUPLICATE PREVENTED: Guest ${fullName} already has a confirmed long-stay reservation [CB#${duplicate.reservationID}] for ${duplicate.startDate} to ${duplicate.endDate}. Suppressed duplicate 1-night placeholder.`;
+                    }
+
+                    if (isOneNightPlaceholder) {
+                        // The existing reservation is an auto-created 1-night Tab placeholder.
+                        // Void the 1-night placeholder in Cloudbeds so the room isn't double-blocked!
+                        console.log(`[Duplicate Guard] Auto-voiding 1-night Tab deposit placeholder [CB#${duplicate.reservationID}] in favor of full ${nights}-night stay...`);
+                        try {
+                            const voidData = new URLSearchParams();
+                            voidData.append("propertyID", CLOUDBEDS_PROPERTY_ID);
+                            voidData.append("reservationID", duplicate.reservationID);
+                            voidData.append("status", "canceled");
+
+                            await axios.put("https://api.cloudbeds.com/api/v1.1/putReservation", voidData.toString(), {
+                                headers: {
+                                    "x-api-key": CLOUDBEDS_API_KEY,
+                                    "Content-Type": "application/x-www-form-urlencoded"
+                                }
+                            });
+
+                            if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                                await sendTelegramAlert(`🧹 *AUTO-CLEANUP DUPLICATE*\n` +
+                                    `Voided 1-night Tab placeholder [CB#${duplicate.reservationID}] (${duplicate.startDate} → ${duplicate.endDate}) for *${fullName}* because full stay (${startDate} → ${endDate}, ${nights} nights) is being booked.`);
+                            }
+                        } catch (voidErr) {
+                            console.error("[Duplicate Guard] Error auto-voiding placeholder:", voidErr.message);
+                        }
+                    } else {
+                        // Overlapping conflicting dates for the same guest
+                        if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+                            await sendTelegramAlert(`🚨 *POTENTIAL DOUBLE-BOOKING DETECTED*\n` +
+                                `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\n` +
+                                `Guest: *${fullName}*\n` +
+                                `Attempted Dates: ${startDate} to ${endDate}\n` +
+                                `Existing Confirmed Booking: [CB#${duplicate.reservationID}] (${duplicate.startDate} to ${duplicate.endDate})\n\n` +
+                                `🛑 Selena postponed auto-booking to prevent double-blocking the room. Please review manually.`);
+                        }
+                        return `⚠️ POTENTIAL DOUBLE-BOOKING: An existing confirmed reservation [CB#${duplicate.reservationID}] for ${duplicate.guestName} (${duplicate.startDate} to ${duplicate.endDate}) overlaps with the requested dates (${startDate} to ${endDate}). Auto-booking held for staff review.`;
+                    }
+                }
+            } catch (guardErr) {
+                console.error("[Double-Booking Guard Warning] Pre-check failed, proceeding with caution:", guardErr.message);
             }
 
             const postData = new URLSearchParams();
@@ -393,8 +512,8 @@ async function handleHotelBooking(args, funcName = "manage_hotel_booking", calle
 
             // Telegram notification tagging Ketut
             if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-                const rateLine = customRate 
-                    ? `💰 Rate: *${customRate}* (Manual / Direct Sale)\n` 
+                const rateLine = customRate
+                    ? `💰 Rate: *${customRate}* (Manual / Direct Sale)\n`
                     : `💰 Rate: Live Cloudbeds PMS Seasonal Rate\n`;
                 const alertMsg = `🏨 *NEW HOTEL RESERVATION (${callerSource})*\n` +
                     `🛎️ **Attention: ${KETUT_TELEGRAM_HANDLE}**\n\n` +
@@ -877,7 +996,7 @@ async function callQwenTelegram(text, chatId = TELEGRAM_CHAT_ID) {
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live diving board sheet schedule. Use 'ADD' to add divers/bookings to the diving board sheet, 'UPDATE' to modify existing bookings, 'REMOVE' to cancel/remove, 'SEARCH' to find divers, or 'CHECK_CAPACITY'.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the diving booking in YYYY-MM-DD format (e.g. '2026-11-05'). Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the diving board sheet cell. Required for ADD and UPDATE. Follow format: '[Name] [Product] [Deposit]' (e.g. 'John Doe TD DPO; Jane Doe TD DPO | specreq: vegetarian'). Multiple guests separated by semicolon (;)." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "Optional target month and year (e.g. 'November 2026')." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet diving schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
-        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
         { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
@@ -937,7 +1056,7 @@ async function callDeepSeekTelegram(text, chatId = TELEGRAM_CHAT_ID) {
         { type: "function", function: { name: "message_customer", description: "Message a customer.", parameters: { type: "object", properties: { phone_number: { type: "string" }, instruction: { type: "string" } }, required: ["phone_number", "instruction"] } } },
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live diving board sheet schedule. Use 'ADD' to add divers/bookings to the diving board sheet, 'UPDATE' to modify existing bookings, 'REMOVE' to cancel/remove, 'SEARCH' to find divers, or 'CHECK_CAPACITY'.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the diving booking in YYYY-MM-DD format (e.g. '2026-11-05'). Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the diving board sheet cell. Required for ADD and UPDATE. Follow format: '[Name] [Product] [Deposit]' (e.g. 'John Doe TD DPO; Jane Doe TD DPO | specreq: vegetarian'). Multiple guests separated by semicolon (;)." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "Optional target month and year (e.g. 'November 2026')." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet diving schedule.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string" } }, required: ["search_query"] } } },
-        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search live hotel reservations and guests in Cloudbeds and Google Sheet.", parameters: { type: "object", properties: { search_query: { type: "string", description: "Guest name or reservation ID to search" }, target_month: { type: "string", description: "Optional target month" } }, required: ["search_query"] } } },
         { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
         { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
@@ -1102,7 +1221,7 @@ async function callGeminiTelegram(text, chatId = TELEGRAM_CHAT_ID) {
                         endDate: { type: "STRING", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." },
                         target_date: { type: "STRING", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." },
                         target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" },
-                        guest_name: { type: "STRING", description: "Full guest name. Required for ADD." },
+                        guest_name: { type: "STRING", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." },
                         guest_phone: { type: "STRING", description: "Guest phone number" },
                         guest_email: { type: "STRING", description: "Guest email address" },
                         rooms_count: { type: "INTEGER", description: "Number of rooms (default 1)" },
@@ -1400,9 +1519,9 @@ async function processWebhook(data) {
                     const msgId = statusObj.id;
                     const rawRecipient = statusObj.recipient_id ? statusObj.recipient_id.toString() : null;
                     const cleanRecipient = rawRecipient ? rawRecipient.replace(/\D/g, '') : null;
-                    const aiSent = cacheGet(msgId) || 
-                                   (rawRecipient ? cacheGet(`ai_sent_${rawRecipient}`) : false) || 
-                                   (cleanRecipient ? cacheGet(`ai_sent_${cleanRecipient}`) : false);
+                    const aiSent = cacheGet(msgId) ||
+                        (rawRecipient ? cacheGet(`ai_sent_${rawRecipient}`) : false) ||
+                        (cleanRecipient ? cacheGet(`ai_sent_${cleanRecipient}`) : false);
 
                     if (!aiSent && rawRecipient) {
                         cacheSet(`last_paused_target`, rawRecipient, 15);
@@ -1469,9 +1588,9 @@ async function processWebhook(data) {
                         const rawTarget = targetId ? targetId.toString() : null;
                         const cleanTarget = rawTarget ? rawTarget.replace(/\D/g, '') : null;
 
-                        const aiSent = cacheGet(msgId) || 
-                                       (rawTarget ? cacheGet(`ai_sent_${rawTarget}`) : false) || 
-                                       (cleanTarget ? cacheGet(`ai_sent_${cleanTarget}`) : false);
+                        const aiSent = cacheGet(msgId) ||
+                            (rawTarget ? cacheGet(`ai_sent_${rawTarget}`) : false) ||
+                            (cleanTarget ? cacheGet(`ai_sent_${cleanTarget}`) : false);
 
                         if (!aiSent) {
                             let contextToSave = textBody;
@@ -1928,6 +2047,8 @@ async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
 
     basePrompt += `CRITICAL: You manage TWO calendars: Dives ('manage_sheet_booking') and Hotel Rooms ('manage_hotel_booking').\n`;
     basePrompt += `CRITICAL TOOL RESTRICTION: For direct customer chats, you are STRICTLY FORBIDDEN from calling 'manage_sheet_booking' (ADD/UPDATE) or 'manage_hotel_booking' unless the customer has EXPLICITLY given you BOTH their Name AND their exact Dates. If missing, ask them first. (This restriction does NOT apply to automated email receipts or action='CHECK_CAPACITY').\n`;
+    basePrompt += `CRITICAL FULL NAME RULE FOR HOTEL (FIRST & LAST NAME REQUIRED):
+For hotel bookings in Cloudbeds ('manage_hotel_booking' action='ADD'), you MUST obtain BOTH the customer's First Name and Last Name (e.g. 'Geoffrey Menardo'). NEVER attempt to book a room with only a first name (e.g. 'Geoffrey') and NEVER invent, assume, or append a placeholder last name like 'Sanctum'! If the customer only provided their first name, you MUST politely ask: 'Could you please also share your last name for the hotel registration?' before proceeding.\n\n`;
     basePrompt += `CRITICAL HOTEL ONLINE DEPOSIT & TAB PAYMENT MANDATE:
 - You are ONLY authorized to reserve or book a hotel room in Cloudbeds ('manage_hotel_booking' action='ADD') IF AND ONLY IF the payment went through on Tab Payment (or verified proof of online deposit payment has been received).
 - DATA CONCURRENCE VERIFICATION: Before calling 'ADD', you MUST verify the concurrence of the data:
@@ -2073,7 +2194,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, REMOVE, or CHECK_CAPACITY.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format. Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
-        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
         { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
@@ -2200,7 +2321,7 @@ async function callDeepSeek(senderId, userMessage = null, extraContext = [], dep
         { type: "function", function: { name: "manage_sheet_booking", description: "Manage live sheet schedule. Use SEARCH, ADD, UPDATE, REMOVE, or CHECK_CAPACITY.", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'ADD', 'UPDATE', 'REMOVE', 'SEARCH', or 'CHECK_CAPACITY'" }, target_date: { type: "string", description: "The date of the booking in YYYY-MM-DD format. Required for ADD, UPDATE, and CHECK_CAPACITY." }, new_text: { type: "string", description: "The formatted string to write into the cell. Required for ADD and UPDATE. Must follow SHEET BOOKING RULES formatting." }, old_date: { type: "string", description: "The old date of the booking in YYYY-MM-DD format. Required for UPDATE and REMOVE." }, old_text_match: { type: "string", description: "A substring of the old cell text to find and clear. Required for UPDATE and REMOVE (e.g. 'GuestName TD DPO')." }, search_query: { type: "string", description: "Customer name or string to search for across the sheet. Required for SEARCH." }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026'). Highly recommended for SEARCH to avoid large data returns." } }, required: ["action"] } } },
         { type: "function", function: { name: "search_sheet_booking", description: "Search the live Google Sheet schedule for a customer's booking. Use this if you only need to search the sheet without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "notify_admin", description: "Send a message directly to human admin staff on Telegram. Use ONLY for emergencies, eLearning materials, certifications, or human manager escalation. NEVER use for payment receipts, screenshots, or routine deposit confirmations.", parameters: { type: "object", properties: { message: { type: "string" } }, required: ["message"] } } },
-        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full guest name. Required for ADD." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
+        { type: "function", function: { name: "manage_hotel_booking", description: "Manage hotel rooms in live Cloudbeds PMS & Google Sheet. Actions: 'CHECK_CAPACITY' (check room availability in live Cloudbeds PMS), 'ADD' (book room with verified deposit), 'REMOVE' or 'CANCEL' (cancel reservation), 'SEARCH', 'UPDATE'. Only Deluxe Garden View rooms are active (dorm offline).", parameters: { type: "object", properties: { action: { type: "string", description: "Must be 'CHECK_CAPACITY', 'ADD', 'REMOVE', 'CANCEL', 'SEARCH', or 'UPDATE'" }, startDate: { type: "string", description: "Check-in date in YYYY-MM-DD format (e.g. '2026-11-10'). Required for CHECK_CAPACITY and ADD." }, endDate: { type: "string", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." }, target_date: { type: "string", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." }, target_dates: { type: "array", items: { type: "string" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" }, guest_name: { type: "string", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." }, guest_phone: { type: "string", description: "Guest phone number" }, guest_email: { type: "string", description: "Guest email address" }, rooms_count: { type: "integer", description: "Number of rooms (default 1)" }, pax: { type: "integer", description: "Number of guests (default 2)" }, custom_rate: { type: "string", description: "Optional manual / negotiated price for direct sale, e.g. 'IDR 600,000/night'" }, deposit_paid: { type: "boolean", description: "REQUIRED for customer chats: Must be true indicating customer paid the online deposit. Strictly forbidden to execute ADD if false or unpaid." }, reservation_id: { type: "string", description: "Cloudbeds reservation ID for cancellation, update, or lookup (e.g. '67TC7TGC0A')" }, old_guest_match: { type: "string", description: "Substring of guest name to cancel or update" }, search_query: { type: "string", description: "Guest name or reservation ID to search" } }, required: ["action"] } } },
         { type: "function", function: { name: "search_hotel_booking", description: "Search the live Hotel calendar for a customer's booking without modifying it.", parameters: { type: "object", properties: { search_query: { type: "string" }, target_month: { type: "string", description: "The month and year to restrict the search to (e.g. 'September 2026')." } }, required: ["search_query"] } } },
         { type: "function", function: { name: "search_nusa_penida_tide", description: "Check live ocean tide charts & water level at Nusa Penida using DeepSeek Search API. STRICTLY for 1-dive slots: 7:00 AM (1 dive) or 2:30 PM (1 dive) boat floatability (min 0.5m or rising tide). NEVER use for 2-dive Manta Point (8:30 AM meeting / 9:30 AM departure), which is ALWAYS available.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format (e.g. '2026-11-10')" }, time_slot: { type: "string", enum: ["morning_7am", "afternoon_230pm", "all_day"], description: "Dive slot to verify" } }, required: ["date"] } } },
         { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
@@ -2372,7 +2493,7 @@ async function callGemini(senderId, extraContext = [], model = "gemini-3.8-flash
                 endDate: { type: "STRING", description: "Check-out date in YYYY-MM-DD format (e.g. '2026-11-12'). Defaults to startDate + 1 day if omitted or 1 night." },
                 target_date: { type: "STRING", description: "Optional single date (YYYY-MM-DD) if customer asks for 1 night." },
                 target_dates: { type: "ARRAY", items: { type: "STRING" }, description: "Optional array of stay dates in YYYY-MM-DD format (e.g. ['2026-11-10', '2026-11-11'])" },
-                guest_name: { type: "STRING", description: "Full guest name. Required for ADD." },
+                guest_name: { type: "STRING", description: "Full legal guest name (BOTH First Name and Last Name required, e.g. 'Geoffrey Menardo'). Never book with only first name." },
                 guest_phone: { type: "STRING", description: "Guest phone number" },
                 guest_email: { type: "STRING", description: "Guest email address" },
                 rooms_count: { type: "INTEGER", description: "Number of rooms (default 1)" },
