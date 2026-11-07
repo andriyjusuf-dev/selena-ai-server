@@ -34,10 +34,17 @@ const CLOUDBEDS_PROPERTY_ID = (process.env.CLOUDBEDS_PROPERTY_ID || "28459744494
 const CLOUDBEDS_DELUXE_ROOM_TYPE_ID = (process.env.CLOUDBEDS_DELUXE_ROOM_TYPE_ID || "284674448941249").trim();
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// NEW: Qwen Local (Cloudflare Tunnel) & Cloud API Configuration
-const QWEN_API_KEY = process.env.QWEN_API_KEY || 'ollama';
-const QWEN_API_URL = process.env.QWEN_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.6:35b-a3b';
+// Qwen Cloud API Configuration (Alibaba Cloud / DashScope / Model Studio - Used for WhatsApp, Instagram & Telegram fallbacks)
+const QWEN_API_KEY = process.env.DASHSCOPE_API_KEY || process.env.QWEN_API_KEY;
+let rawQwenUrl = process.env.QWEN_API_URL || 'https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1/chat/completions';
+if (!rawQwenUrl.includes('/chat/completions')) {
+    rawQwenUrl = rawQwenUrl.replace(/\/+$/, '') + '/chat/completions';
+}
+const QWEN_API_URL = rawQwenUrl;
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash';
+
+// Local Qwen (Cloudflare Tunnel to Mac Studio Ollama - STRICTLY for email replying and spam/promotions rescue)
+const LOCAL_QWEN_API_KEY = process.env.LOCAL_QWEN_API_KEY || 'ollama';
 const LOCAL_QWEN_API_URL = process.env.LOCAL_QWEN_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
 const LOCAL_QWEN_MODEL = process.env.LOCAL_QWEN_MODEL || 'qwen3.6:35b-a3b';
 
@@ -1035,7 +1042,7 @@ async function callQwenTelegram(text, chatId = TELEGRAM_CHAT_ID) {
 
                 message = response.data.choices[0].message;
             }
-            if (message.content) return message.content;
+            if (message.content) return stripThinkingTags(message.content);
         }
     } catch (e) {
         console.error("Qwen Telegram Error:", e.response ? JSON.stringify(e.response.data) : e.message);
@@ -1858,37 +1865,81 @@ async function handleInstagramCommentEvent(commentValue) {
 async function generateCommentReply(commentText) {
     const systemPrompt = `You are the friendly owner of an Instagram page. A user just commented on your post. Generate a short, positive, and appreciative reply to their comment. Keep it under 2 sentences, use nice emojis. If their comment is negative or toxic, reply with a calm, polite message or a simple acknowledgment.`;
 
-    if (ACTIVE_AI === 'qwen') {
-        try {
-            const response = await axios.post(QWEN_API_URL, {
-                model: QWEN_MODEL,
-                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
-            }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
-            if (response.data.choices && response.data.choices.length > 0) return response.data.choices[0].message.content;
-        } catch (error) { console.error("Qwen Comment Reply Error:", error.message); }
-    } else if (ACTIVE_AI === 'deepseek') {
+    const tryDeepSeek = async () => {
+        if (!DEEPSEEK_API_KEY) return null;
         try {
             const response = await axios.post('https://api.deepseek.com/chat/completions', {
                 model: 'deepseek-flash',
                 messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
-            }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } });
-
+            }, { headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` }, timeout: 15000 });
             if (response.data.choices && response.data.choices.length > 0) {
                 return response.data.choices[0].message.content;
             }
-        } catch (error) { console.error("DeepSeek Comment Reply Error:", error.message); }
-    } else {
+        } catch (error) {
+            console.error("DeepSeek Comment Reply Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        }
+        return null;
+    };
+
+    const tryQwenCloud = async () => {
+        if (!QWEN_API_KEY) return null;
+        try {
+            const response = await axios.post(QWEN_API_URL, {
+                model: QWEN_MODEL,
+                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
+            }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` }, timeout: 15000 });
+            if (response.data.choices && response.data.choices.length > 0) {
+                return response.data.choices[0].message.content;
+            }
+        } catch (error) {
+            console.error("Qwen Cloud (Alibaba) Comment Reply Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        }
+        return null;
+    };
+
+    const tryGemini = async () => {
+        if (!process.env.GEMINI_API_KEY) return null;
         try {
             const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
                 system_instruction: { parts: [{ text: systemPrompt }] },
                 contents: [{ role: "user", parts: [{ text: `User's Comment: "${commentText}"` }] }]
-            });
+            }, { timeout: 15000 });
             if (response.data.candidates && response.data.candidates.length > 0) {
                 return response.data.candidates[0].content.parts[0].text;
             }
-        } catch (error) { console.error("Gemini Comment Reply Error:", error.message); }
+        } catch (error) {
+            console.error("Gemini Comment Reply Error:", error.response ? JSON.stringify(error.response.data) : error.message);
+        }
+        return null;
+    };
+
+    let reply = null;
+    if (ACTIVE_AI === 'deepseek') {
+        reply = await tryDeepSeek();
+        if (!reply) {
+            console.log("[Comment Reply Fallback] DeepSeek failed. Trying Qwen Cloud (Alibaba)...");
+            reply = await tryQwenCloud();
+        }
+        if (!reply) {
+            console.log("[Comment Reply Fallback] Qwen Cloud failed. Trying Gemini 3.8 Flash...");
+            reply = await tryGemini();
+        }
+    } else if (ACTIVE_AI === 'qwen') {
+        reply = await tryQwenCloud();
+        if (!reply) {
+            console.log("[Comment Reply Fallback] Qwen Cloud failed. Trying DeepSeek...");
+            reply = await tryDeepSeek();
+        }
+        if (!reply) {
+            console.log("[Comment Reply Fallback] DeepSeek failed. Trying Gemini 3.8 Flash...");
+            reply = await tryGemini();
+        }
+    } else {
+        reply = await tryGemini();
+        if (!reply) reply = await tryDeepSeek();
     }
-    return null;
+
+    return reply;
 }
 
 // ==========================================
@@ -2239,32 +2290,47 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
 
     const targetUrl = forceLocal ? LOCAL_QWEN_API_URL : QWEN_API_URL;
     const targetModel = forceLocal ? LOCAL_QWEN_MODEL : QWEN_MODEL;
+    const targetKey = forceLocal ? LOCAL_QWEN_API_KEY : QWEN_API_KEY;
+
+    if (!forceLocal && !targetKey) {
+        console.warn(`[Qwen Cloud Warning] QWEN_API_KEY is not set in environment. Skipping Qwen Cloud...`);
+        return null;
+    }
+
     // For email/local calls: 1 fast attempt with a strict 25s timeout so Google Apps Script never times out if Mac Studio is asleep
     let retries = (forceLocal || isEmail) ? 1 : 2;
     let response;
 
+    const requestHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${targetKey}`
+    };
+    if (forceLocal) {
+        requestHeaders['ngrok-skip-browser-warning'] = 'true';
+    }
+
+    const requestPayload = {
+        model: targetModel,
+        messages: messages,
+        tools: qwenTools,
+        temperature: isEmail ? 0.5 : 0.7,
+        max_tokens: isEmail ? 1500 : 1024
+    };
+    if (forceLocal) {
+        requestPayload.reasoning_effort = 'none'; // Disables slow <think> token generation on local qwen3.6:35b-a3b
+    }
+
     while (retries > 0) {
         try {
             const tStart = Date.now();
-            response = await axios.post(targetUrl, {
-                model: targetModel,
-                messages: messages,
-                tools: qwenTools,
-                reasoning_effort: 'none', // Disables slow <think> token generation on qwen3.6:35b-a3b (cuts latency from 12s to ~2.3s)
-                temperature: isEmail ? 0.5 : 0.7,
-                max_tokens: isEmail ? 1500 : 1024
-            }, {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${QWEN_API_KEY}`,
-                    'ngrok-skip-browser-warning': 'true'
-                },
+            response = await axios.post(targetUrl, requestPayload, {
+                headers: requestHeaders,
                 timeout: isEmail ? 25000 : 30000
             });
-            console.log(`[Local Qwen] ${targetModel} responded in ${Date.now() - tStart}ms (cached_tokens: ${response.data?.usage?.prompt_tokens_details?.cached_tokens ?? 'N/A'})`);
+            console.log(`[${forceLocal ? 'Local Qwen' : 'Qwen Cloud (Alibaba)'}] ${targetModel} responded in ${Date.now() - tStart}ms (cached_tokens: ${response.data?.usage?.prompt_tokens_details?.cached_tokens ?? 'N/A'})`);
             break;
         } catch (e) {
-            console.error(`[Qwen API Error] (${targetUrl}) Retries left: ${retries - 1} -`, e.message);
+            console.error(`[Qwen API Error] (${targetUrl}) Retries left: ${retries - 1} -`, e.response ? JSON.stringify(e.response.data) : e.message);
             retries--;
             if (retries === 0) return null;
             await new Promise(r => setTimeout(r, 1500));
@@ -3288,7 +3354,7 @@ Respond with ONLY a JSON object:
         }, {
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${QWEN_API_KEY}`,
+                'Authorization': `Bearer ${LOCAL_QWEN_API_KEY}`,
                 'ngrok-skip-browser-warning': 'true'
             },
             timeout: 10000 // Strict 10s timeout so Google Apps Script never hangs
