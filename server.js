@@ -34,10 +34,12 @@ const CLOUDBEDS_PROPERTY_ID = (process.env.CLOUDBEDS_PROPERTY_ID || "28459744494
 const CLOUDBEDS_DELUXE_ROOM_TYPE_ID = (process.env.CLOUDBEDS_DELUXE_ROOM_TYPE_ID || "284674448941249").trim();
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 
-// NEW: Qwen Cloud API Configuration
-const QWEN_API_KEY = process.env.QWEN_API_KEY;
-const QWEN_API_URL = process.env.QWEN_API_URL || 'https://maas.qwencloudapi.com/compatible-mode/v1/chat/completions';
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.8-flash';
+// NEW: Qwen Local (Cloudflare Tunnel) & Cloud API Configuration
+const QWEN_API_KEY = process.env.QWEN_API_KEY || 'ollama';
+const QWEN_API_URL = process.env.QWEN_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.6:35b-a3b';
+const LOCAL_QWEN_API_URL = process.env.LOCAL_QWEN_API_URL || 'https://qwen.sanctumdiveindonesia.com/v1/chat/completions';
+const LOCAL_QWEN_MODEL = process.env.LOCAL_QWEN_MODEL || 'qwen3.6:35b-a3b';
 
 // Set Default AI to DeepSeek
 let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
@@ -45,9 +47,6 @@ let ACTIVE_AI = process.env.DEFAULT_AI_PROVIDER || 'deepseek';
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
     console.error("🚨 FATAL ERROR: SUPABASE_URL or SUPABASE_SERVICE_KEY is missing in Render Environment Variables!");
     process.exit(1);
-}
-if (ACTIVE_AI === 'qwen' && !QWEN_API_KEY) {
-    console.error("⚠️ WARNING: Qwen is active but QWEN_API_KEY is missing.");
 }
 
 // Initialize Supabase
@@ -757,11 +756,13 @@ async function executeTelegramTool(funcName, args) {
         console.log(`[Telegram Tool] AI is running add_rule with text: ${args.rule_text}`);
         const { error } = await supabase.from('rules').insert([{ rule_text: args.rule_text }]);
         if (error) console.error("[Supabase Error] add_rule failed:", error.message);
+        invalidateRulesCache();
         return { status: error ? "failed" : "success", message: error ? error.message : "Rule added." };
     } else if (funcName === 'delete_rule') {
         console.log(`[Telegram Tool] AI is running delete_rule for match: ${args.rule_text_match}`);
         const { error } = await supabase.from('rules').delete().ilike('rule_text', `%${args.rule_text_match}%`);
         if (error) console.error("[Supabase Error] delete_rule failed:", error.message);
+        invalidateRulesCache();
         return { status: error ? "failed" : "success", message: error ? error.message : "Rule deleted." };
     } else if (funcName === 'pause_customer') {
         console.log(`[Telegram Tool] AI is running pause_customer for: ${args.phone_number} duration: ${args.duration_minutes}m`);
@@ -1993,23 +1994,48 @@ async function pauseAI(senderId, humanMessage) {
     console.log(`[Auto-Pause] Paused AI for ${strId} for 3 minutes. Saved human context.`);
 }
 
+// In-memory cache for Supabase rules (prevents redundant DB round-trips & preserves Ollama KV cache)
+let cachedRulesData = null;
+let cachedRulesExpiresAt = 0;
+
+function invalidateRulesCache() {
+    cachedRulesData = null;
+    cachedRulesExpiresAt = 0;
+}
+
+async function getCachedRules() {
+    const now = Date.now();
+    if (cachedRulesData && now < cachedRulesExpiresAt) {
+        return cachedRulesData;
+    }
+    const { data, error } = await supabase
+        .from('rules')
+        .select('rule_text')
+        .order('id', { ascending: true });
+    if (!error && data) {
+        cachedRulesData = data;
+        cachedRulesExpiresAt = now + 180 * 1000; // 3-minute TTL
+        return data;
+    }
+    return cachedRulesData || [];
+}
+
 async function handleAdminCommand(adminId, commandText) {
     const rule = commandText.replace(/^!(learn|rule)\s*/i, '');
     await supabase.from('rules').insert([
         { rule_text: rule }
     ]);
+    invalidateRulesCache();
     await sendWhatsAppMessage(adminId, `✅ Rule successfully added to Selena's brain:\n"${rule}"`);
     console.log(`[Admin Command] Added rule: ${rule}`);
 }
 
 async function buildSystemPrompt(isEmail = false, platform = 'whatsapp') {
-    const { data, error } = await supabase
-        .from('rules')
-        .select('rule_text')
-        .order('id', { ascending: true });
+    const data = await getCachedRules();
 
     const currentDate = new Date().toLocaleString('en-US', { timeZone: 'Asia/Makassar', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    let basePrompt = `You're Selena, Sanctum Dive's AI agent. [TIME: ${currentDate}]. `;
+    // NOTE: Static identity & rules placed first so Local Qwen (Ollama) KV-caches the entire prefix (~3,000+ tokens)
+    let basePrompt = `You're Selena, Sanctum Dive's AI agent. `;
 
     if (platform === 'instagram') {
         basePrompt += `[SYSTEM OVERRIDE: You are currently talking to a customer on Instagram Direct Messages. Meta strictly limits each Instagram DM to 1,000 characters. Keep your answers friendly, engaging, and concise (ideally under 800 characters) without overwhelming the user with long walls of text.] \n\n`;
@@ -2074,8 +2100,6 @@ CRITICAL AVAILABILITY PRIVACY RULE (DIVES & HOTEL): When confirming availability
         `6. Confirm Directly with Customer: Respond warmly in the chat/email confirming their booking is fully set (e.g. "Thank you! Deposit received and your booking for [Date] is confirmed.").\n` +
         `7. CRITICAL NOTIFY_ADMIN RULE: Never call 'notify_admin' for routine payment screenshots or deposit confirmations. Only call 'notify_admin' for emergencies, eLearning/certifications, or true booking conflicts.\n\n`;
 
-    basePrompt += ``
-
     basePrompt += `--- DIVE SCHEDULE, TIDES & BOAT FLOATABILITY ('search_nusa_penida_tide') ---\n`;
     basePrompt += `DIVE SCHEDULE OPTIONS & RULES:
 1) STANDARD 2-DIVE MANTA POINT TRIP:
@@ -2109,7 +2133,6 @@ WEATHER INQUIRIES & SALES MANDATE ('search_nusa_penida_weather'):
     basePrompt += `MANUAL & DIRECT SALES: Selena can quote direct rates from Supabase rules or apply custom rates agreed by staff (pass 'custom_rate' in manage_hotel_booking).\n`;
     basePrompt += `HOTEL STAFF ALERTS: Only tag Ketut (${KETUT_TELEGRAM_HANDLE}) on finalized room bookings or room cancellations. NEVER tag Ketut or sound alarms for routine availability queries or capacity checks.\n\n`;
 
-
     if (data && data.length > 0) {
         basePrompt += "--- GUIDEBOOK & RULES ---\n";
         data.forEach((r, idx) => {
@@ -2118,6 +2141,7 @@ WEATHER INQUIRIES & SALES MANDATE ('search_nusa_penida_weather'):
         basePrompt += "-------------------------\n";
     }
 
+    basePrompt += `\n[CURRENT BALI TIME: ${currentDate}]\n`;
     return basePrompt;
 }
 
@@ -2159,8 +2183,19 @@ async function handleBookingNotification(args, senderId) {
     console.log(`[Booking] Alert sent to Admins.`);
 }
 
-// NEW: QWEN API FUNCTION
-async function callQwen(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp') {
+// Helper: Strip any <think>...</think> blocks from local Qwen responses
+function stripThinkingTags(text) {
+    if (!text || typeof text !== 'string') return text;
+    return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+//Dedicated wrapper for Local Qwen (Mac Studio via Cloudflare Tunnel) - Fast & Zero Token Cost
+async function callLocalQwen(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'gmail') {
+    return await callQwen(senderId, userMessage, extraContext, depth, isEmail, platform, true);
+}
+
+// NEW: QWEN API FUNCTION (Supports both Local Cloudflare Tunnel & Cloud Qwen)
+async function callQwen(senderId, userMessage = null, extraContext = [], depth = 0, isEmail = false, platform = 'whatsapp', forceLocal = false) {
     if (depth > 5) {
         console.error(`[Recursion Limit] AI tool loop exceeded max depth for ${senderId}`);
         return "IGNORE";
@@ -2176,16 +2211,18 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         latestUserMessage = lastMsg.content;
     }
 
-    let systemPrompt = await buildSystemPrompt(isEmail, platform);
+    const systemPrompt = await buildSystemPrompt(isEmail, platform);
 
+    // Keep systemPrompt static for Ollama KV-caching; attach past context to the user message
+    let userPayloadText = latestUserMessage;
     if (history.length > 0) {
         const historyText = history.map(h => `${h.role === 'user' ? 'Customer' : 'You'}: ${h.content}`).join('\n\n');
-        systemPrompt += `\n[PAST CONVERSATION CONTEXT]\n${historyText}\n\n[END PAST CONTEXT]\n`;
+        userPayloadText = `[PAST CONVERSATION CONTEXT]\n${historyText}\n[END PAST CONTEXT]\n\n[LATEST CUSTOMER MESSAGE]\n${latestUserMessage}`;
     }
 
     const messages = [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: latestUserMessage },
+        { role: 'user', content: userPayloadText },
         ...extraContext
     ];
 
@@ -2200,20 +2237,37 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
         { type: "function", function: { name: "search_nusa_penida_weather", description: "Check live weather, wind, and sea conditions for Nusa Penida using DeepSeek Search API.", parameters: { type: "object", properties: { date: { type: "string", description: "Target date in YYYY-MM-DD format" } }, required: ["date"] } } }
     ];
 
-    let retries = 3;
+    const targetUrl = forceLocal ? LOCAL_QWEN_API_URL : QWEN_API_URL;
+    const targetModel = forceLocal ? LOCAL_QWEN_MODEL : QWEN_MODEL;
+    // For email/local calls: 1 fast attempt with a strict 25s timeout so Google Apps Script never times out if Mac Studio is asleep
+    let retries = (forceLocal || isEmail) ? 1 : 2;
     let response;
 
     while (retries > 0) {
         try {
-            response = await axios.post(QWEN_API_URL, {
-                model: QWEN_MODEL, messages: messages, tools: qwenTools, temperature: 0.7, max_tokens: isEmail ? 2500 : 1024
-            }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
+            const tStart = Date.now();
+            response = await axios.post(targetUrl, {
+                model: targetModel,
+                messages: messages,
+                tools: qwenTools,
+                reasoning_effort: 'none', // Disables slow <think> token generation on qwen3.6:35b-a3b (cuts latency from 12s to ~2.3s)
+                temperature: isEmail ? 0.5 : 0.7,
+                max_tokens: isEmail ? 1500 : 1024
+            }, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${QWEN_API_KEY}`,
+                    'ngrok-skip-browser-warning': 'true'
+                },
+                timeout: isEmail ? 25000 : 30000
+            });
+            console.log(`[Local Qwen] ${targetModel} responded in ${Date.now() - tStart}ms (cached_tokens: ${response.data?.usage?.prompt_tokens_details?.cached_tokens ?? 'N/A'})`);
             break;
         } catch (e) {
-            console.error(`[Qwen API Error] Retries left: ${retries - 1}`, e.message);
+            console.error(`[Qwen API Error] (${targetUrl}) Retries left: ${retries - 1} -`, e.message);
             retries--;
             if (retries === 0) return null;
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 1500));
         }
     }
 
@@ -2248,7 +2302,7 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                         if (process.env.GOOGLE_SHEET_API_URL) {
                             try {
                                 const payload = funcName === "search_sheet_booking" ? { action: 'SEARCH', search_query: args.search_query, target_month: args.target_month } : args;
-                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload);
+                                const sheetRes = await axios.post(process.env.GOOGLE_SHEET_API_URL, payload, { timeout: 15000 });
                                 resultStr = sheetRes.data.status || "Completed";
 
                                 const actUpper = (args.action || '').toUpperCase();
@@ -2271,14 +2325,15 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
                     newContext.push({ role: "tool", tool_call_id: toolCall.id, content: resultStr });
                 }
 
-                return await callQwen(senderId, null, newContext, depth + 1, isEmail, platform);
+                return await callQwen(senderId, null, newContext, depth + 1, isEmail, platform, forceLocal);
             }
 
             if (message.content !== undefined && message.content !== null) {
-                if (message.content.trim().length > 0) {
-                    await appendHistory(senderId, "model", message.content);
+                const cleanContent = stripThinkingTags(message.content);
+                if (cleanContent.length > 0) {
+                    await appendHistory(senderId, "model", cleanContent);
                 }
-                return message.content;
+                return cleanContent;
             }
         }
     } catch (e) {
@@ -3066,7 +3121,7 @@ async function runDailyFollowUps() {
 }
 
 // ==========================================
-// 7. GMAIL WEBHOOK API
+// 7. GMAIL WEBHOOK API (LOCAL QWEN PRIMARY)
 // ==========================================
 app.post('/gmail-webhook', async (req, res) => {
     try {
@@ -3082,7 +3137,10 @@ app.post('/gmail-webhook', async (req, res) => {
             !senderEmailLower.includes('bokun') &&
             !senderEmailLower.includes('trip') &&
             !senderEmailLower.includes('getyourguide') &&
-            !senderEmailLower.includes('tab')
+            !senderEmailLower.includes('booking.com') &&
+            !senderEmailLower.includes('airbnb') &&
+            !senderEmailLower.includes('tab') &&
+            !senderEmailLower.includes('wise')
         ) {
             console.log(`[Gmail] HARD BLOCKED automated/vendor email: ${senderEmail}`);
             return res.json({ action: "IGNORED" });
@@ -3113,20 +3171,20 @@ app.post('/gmail-webhook', async (req, res) => {
 
         await appendHistory(senderEmail, "user", contextToSave);
 
-        // GMAIL AI BRAIN: DeepSeek Flash is primary, Qwen is fallback, Gemini as safety net
-        let aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+        // GMAIL AI BRAIN: Local Qwen (qwen.sanctumdiveindonesia.com) is #1 Primary (Zero API Token Cost!), DeepSeek & Gemini as safety nets
+        let aiReply = await callLocalQwen(senderEmail, null, [], 0, true, 'gmail');
         if (!aiReply) {
-            console.log(`[Gmail Fallback] DeepSeek failed for ${senderEmail}. Falling back to Qwen...`);
-            aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+            console.log(`[Gmail Fallback] Local Qwen unreachable/timed out for ${senderEmail}. Falling back to DeepSeek...`);
+            aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
         }
         if (!aiReply) {
-            console.log(`[Gmail Fallback] Qwen failed for ${senderEmail}. Falling back to Gemini...`);
+            console.log(`[Gmail Fallback] DeepSeek failed for ${senderEmail}. Falling back to Gemini...`);
             aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         }
 
         if (aiReply) {
             if (/^IGNORE[\s.!\n]*$/i.test(aiReply.trim())) {
-                console.log(`[Gmail] Ignored spam/promo from ${senderEmail}`);
+                console.log(`[Gmail] Ignored spam/promo/completed receipt from ${senderEmail}`);
                 return res.json({ action: "IGNORED" });
             }
 
@@ -3143,13 +3201,49 @@ app.post('/gmail-webhook', async (req, res) => {
 
 
 // ==========================================
-// 7.1 GMAIL SPAM EVALUATION & RESCUE API
+// 7.1 GMAIL SPAM & PROMOTIONS EVALUATION & RESCUE API (LOCAL QWEN PRIMARY)
 // ==========================================
-async function evaluateSpamEmail(senderEmail, subject, body) {
-    const prompt = `You are Selena's spam evaluator for Sanctum Dive Resort, a scuba diving resort and dive center in Nusa Penida, Bali, Indonesia.
+function isObviousBulkOrAutomatedJunk(senderEmail, subject, body, folderType = 'Spam') {
+    const senderLower = (senderEmail || "").toLowerCase();
+    const subjectLower = (subject || "").toLowerCase();
+    const bodyLower = (body || "").substring(0, 1500).toLowerCase();
+    const combinedText = `${senderLower} ${subjectLower} ${bodyLower}`;
 
-An incoming email was placed into Gmail's Spam folder.
-Your job is to strictly classify whether this email is a REAL CUSTOMER / BUSINESS INQUIRY or TRUE SPAM.
+    // Trusted OTA, Booking & Payment Platforms - NEVER auto-block these!
+    const trustedPlatformRegex = /viator|bokun|trip\.com|ctrip|getyourguide|booking\.com|airbnb|expedia|klook|tab\.travel|tabpayment|tab\s+payment|wise\.com|stripe|padi|ssi|cloudbeds|sanctumdive|sanctumnusapenida/i;
+    if (trustedPlatformRegex.test(combinedText)) {
+        return null;
+    }
+
+    // Genuine Dive / Snorkel / Resort Inquiry Keywords - If mentioned, let Local Qwen inspect it
+    const businessRelevanceRegex = /\b(dive|diving|scuba|manta|snorkel|snorkeling|penida|nusa\s+penida|sanctum|open\s+water|padi|try\s+dive|fun\s+dive|discover\s+scuba|divemaster|rescue\s+diver|deluxe\s+room|garden\s+view|hotel\s+room|check-in|check\s+in)\b/i;
+    const hasBusinessKeywords = businessRelevanceRegex.test(`${subjectLower} ${bodyLower}`);
+
+    // 1. Automated / No-Reply / Bulk Marketing Senders without business keywords
+    const automatedSenderRegex = /no-reply|noreply|mailer-daemon|postmaster|newsletter|marketing|promotions@|promo@|updates@|notification|alerts@| bounce|donotreply|do-not-reply/i;
+    if (automatedSenderRegex.test(senderLower) && !hasBusinessKeywords) {
+        return "Automated/no-reply/newsletter sender without dive or hotel keywords";
+    }
+
+    // 2. Known Consumer / Social / Retail Bulk Domains
+    const bulkDomainRegex = /linkedin\.com|facebookmail\.com|instagram\.com|pinterest\.com|quora\.com|medium\.com|substack\.com|shopee|tokopedia|lazada|grab\.com|gojek|agoda\.com|traveloka|tiktok\.com|twitter\.com|x\.com|youtube\.com|googlealerts/i;
+    if (bulkDomainRegex.test(senderLower) && !hasBusinessKeywords) {
+        return "Bulk social/retail marketing domain";
+    }
+
+    // 3. For Promotions folder: if there are zero dive/hotel/Sanctum keywords and it has "unsubscribe" footer, fast-reject in 0ms
+    if (folderType.toUpperCase() === 'PROMOTIONS' && !hasBusinessKeywords && /unsubscribe|opt\s*out|manage\s+preferences|view\s+in\s+browser/i.test(bodyLower)) {
+        return "Promotions newsletter with unsubscribe footer and no Sanctum/dive/hotel relevance";
+    }
+
+    return null;
+}
+
+async function evaluateSpamEmail(senderEmail, subject, body, folderType = 'Spam') {
+    const prompt = `You are Selena's email rescue evaluator for Sanctum Dive Resort, a scuba diving resort and hotel in Nusa Penida, Bali, Indonesia.
+
+An incoming email was placed into Gmail's ${folderType} folder.
+Your job is to strictly classify whether this email is a REAL CUSTOMER / BOOKING / PAYMENT INQUIRY or JUNK (${folderType.toUpperCase()} / MARKETING).
 
 LEGITIMATE EMAILS (isLegit: true) INCLUDE:
 - Anyone asking about scuba diving (Discover Scuba / Try Dive, Fun Dives, PADI Open Water, Advanced, Rescue, Divemaster, etc.).
@@ -3160,17 +3254,17 @@ LEGITIMATE EMAILS (isLegit: true) INCLUDE:
 - Booking confirmations / receipts from booking platforms (Viator, Bokun, Trip.com, GetYourGuide, Airbnb, Booking.com, etc.).
 - Genuine human travelers or past/future guests asking questions.
 
-TRUE SPAM (isLegit: false) INCLUDES:
-- Unsolicited B2B sales pitches (SEO, backlink outreach, website design/development agencies, software pitches).
+JUNK / SPAM / PROMOTIONS (isLegit: false) INCLUDES:
+- Unsolicited B2B sales pitches (SEO, backlink outreach, website design/development agencies, app developers, marketing agencies, software pitches).
 - Crypto, investments, loans, financial schemes, inheritance scams, phishing.
-- Mass marketing newsletters, cold recruitment/staffing sales.
+- General retail/travel newsletters, promos, discounts, social media notifications, or cold recruitment/staffing sales not addressed to Sanctum Dive Resort bookings.
 - Adult/dating/pharma spam.
 
 EMAIL DETAILS:
 From: ${senderEmail}
 Subject: ${subject || "(No Subject)"}
 Body Snippet:
-${(body || "").substring(0, 1500)}
+${(body || "").substring(0, 1200)}
 
 Respond with ONLY a JSON object:
 {
@@ -3178,7 +3272,40 @@ Respond with ONLY a JSON object:
   "reason": "Brief 1-sentence reason"
 }`;
 
-    // 1. Try DeepSeek Flash
+    // 1. PRIMARY: Local Qwen via Cloudflare Tunnel (qwen.sanctumdiveindonesia.com - ~0.6s-0.9s, Zero API Token Cost!)
+    try {
+        const tStart = Date.now();
+        const localRes = await axios.post(LOCAL_QWEN_API_URL, {
+            model: LOCAL_QWEN_MODEL,
+            messages: [
+                { role: 'system', content: 'You are an email classification assistant. Respond ONLY in valid JSON format. /no_think' },
+                { role: 'user', content: prompt }
+            ],
+            reasoning_effort: 'none',
+            temperature: 0.1,
+            max_tokens: 120,
+            response_format: { type: 'json_object' }
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${QWEN_API_KEY}`,
+                'ngrok-skip-browser-warning': 'true'
+            },
+            timeout: 10000 // Strict 10s timeout so Google Apps Script never hangs
+        });
+
+        if (localRes.data.choices && localRes.data.choices.length > 0) {
+            const rawText = stripThinkingTags(localRes.data.choices[0].message.content || "");
+            const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+            const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
+            console.log(`[${folderType} Eval Local Qwen] Classified in ${Date.now() - tStart}ms: isLegit=${Boolean(parsed.isLegit)}`);
+            return { isLegit: Boolean(parsed.isLegit), reason: parsed.reason || "Evaluated by Local Qwen" };
+        }
+    } catch (err) {
+        console.error(`[${folderType} Eval Local Qwen Error] Falling back to DeepSeek:`, err.message);
+    }
+
+    // 2. FALLBACK 1: DeepSeek Flash
     try {
         if (DEEPSEEK_API_KEY) {
             const dsRes = await axios.post('https://api.deepseek.com/chat/completions', {
@@ -3192,7 +3319,7 @@ Respond with ONLY a JSON object:
                 response_format: { type: 'json_object' }
             }, {
                 headers: { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` },
-                timeout: 15000
+                timeout: 12000
             });
 
             if (dsRes.data.choices && dsRes.data.choices.length > 0) {
@@ -3202,10 +3329,10 @@ Respond with ONLY a JSON object:
             }
         }
     } catch (err) {
-        console.error("[Spam Eval DeepSeek Error]", err.message);
+        console.error(`[${folderType} Eval DeepSeek Error]`, err.message);
     }
 
-    // 2. Fallback to Gemini Flash
+    // 3. FALLBACK 2: Gemini Flash
     try {
         if (process.env.GEMINI_API_KEY) {
             const geminiRes = await axios.post(
@@ -3217,7 +3344,7 @@ Respond with ONLY a JSON object:
                         maxOutputTokens: 150
                     }
                 },
-                { timeout: 15000 }
+                { timeout: 12000 }
             );
 
             if (geminiRes.data.candidates && geminiRes.data.candidates.length > 0) {
@@ -3230,52 +3357,45 @@ Respond with ONLY a JSON object:
             }
         }
     } catch (err) {
-        console.error("[Spam Eval Gemini Error]", err.message);
+        console.error(`[${folderType} Eval Gemini Error]`, err.message);
     }
 
     return { isLegit: false, reason: "Evaluation failed or uncertain" };
 }
 
-app.post('/evaluate-spam', async (req, res) => {
+async function handleEmailRescueEvaluation(req, res, defaultFolder = 'Spam') {
     try {
-        const { threadId, messageId, senderEmail, subject, body, attachments } = req.body;
+        const { threadId, messageId, senderEmail, subject, body, attachments, sourceFolder } = req.body;
+        const folderLabel = sourceFolder || defaultFolder;
 
-        console.log(`[Spam Inspector] Inspecting email from ${senderEmail}: ${subject}`);
+        console.log(`[${folderLabel} Inspector] Inspecting email from ${senderEmail}: ${subject}`);
 
-        const senderEmailLower = (senderEmail || "").toLowerCase();
-
-        // 1. Instant block for obvious automated bots/vendors (unless booking platform)
-        if ((senderEmailLower.includes('no-reply') || senderEmailLower.includes('noreply') || senderEmailLower.includes('mailer-daemon')) &&
-            !senderEmailLower.includes('viator') &&
-            !senderEmailLower.includes('bokun') &&
-            !senderEmailLower.includes('trip') &&
-            !senderEmailLower.includes('getyourguide') &&
-            !senderEmailLower.includes('booking.com') &&
-            !senderEmailLower.includes('airbnb')
-        ) {
-            console.log(`[Spam Inspector] HARD BLOCKED automated spam: ${senderEmail}`);
-            return res.json({ isLegit: false, action: "IGNORED", reason: "Automated/no-reply sender" });
+        // 1. 0ms Instant Pre-Filter for obvious automated bots, newsletters & marketing
+        const fastBlockReason = isObviousBulkOrAutomatedJunk(senderEmail, subject, body, folderLabel);
+        if (fastBlockReason) {
+            console.log(`[${folderLabel} Inspector] ⚡ 0ms FAST-BLOCKED: ${senderEmail} (${fastBlockReason})`);
+            return res.json({ isLegit: false, action: "IGNORED", reason: fastBlockReason });
         }
 
-        // 2. AI Spam Evaluation
-        const evalResult = await evaluateSpamEmail(senderEmail, subject, body);
+        // 2. Local Qwen AI Evaluation (~0.9s)
+        const evalResult = await evaluateSpamEmail(senderEmail, subject, body, folderLabel);
 
         if (!evalResult.isLegit) {
-            console.log(`[Spam Inspector] AI classified as SPAM: ${senderEmail} - ${subject} (${evalResult.reason})`);
+            console.log(`[${folderLabel} Inspector] AI classified as JUNK: ${senderEmail} - ${subject} (${evalResult.reason})`);
             return res.json({ isLegit: false, action: "IGNORED", reason: evalResult.reason });
         }
 
         // 3. Legit email rescued!
-        console.log(`[Spam Inspector] 🎉 RESCUING legitimate client inquiry from ${senderEmail}: ${subject} (${evalResult.reason})`);
+        console.log(`[${folderLabel} Inspector] 🎉 RESCUING legitimate client inquiry from ${senderEmail}: ${subject} (${evalResult.reason})`);
 
         // Send Telegram alert to admin immediately
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
-            const alertText = `🚨 SPAM RESCUE ALERT!\n\n` +
-                `Selena rescued a legitimate client inquiry from Gmail Spam!\n\n` +
+            const alertText = `🚨 ${folderLabel.toUpperCase()} RESCUE ALERT!\n\n` +
+                `Selena rescued a legitimate client/booking email from Gmail ${folderLabel}!\n\n` +
                 `👤 From: ${senderEmail}\n` +
                 `📌 Subject: ${subject || "(No Subject)"}\n` +
                 `💡 Reason: ${evalResult.reason}\n\n` +
-                `✅ Action: Moved to Inbox & AI Draft created.`;
+                `✅ Action: Moved to Primary Inbox & AI Draft created.`;
             await sendTelegramAlert(alertText);
         }
 
@@ -3303,33 +3423,36 @@ app.post('/evaluate-spam', async (req, res) => {
 
         await appendHistory(senderEmail, "user", contextToSave);
 
-        // 5. Generate AI reply draft (DeepSeek Flash primary, Qwen fallback, Gemini safety net)
-        let aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
+        // 5. Generate AI reply draft (Local Qwen #1 Primary, DeepSeek fallback, Gemini safety net)
+        let aiReply = await callLocalQwen(senderEmail, null, [], 0, true, 'gmail');
         if (!aiReply) {
-            console.log(`[Gmail Fallback] DeepSeek failed for ${senderEmail}. Falling back to Qwen...`);
-            aiReply = await callQwen(senderEmail, null, [], 0, true, 'gmail');
+            console.log(`[${folderLabel} Rescue Fallback] Local Qwen failed for ${senderEmail}. Falling back to DeepSeek...`);
+            aiReply = await callDeepSeek(senderEmail, null, [], 0, true, 'gmail');
         }
         if (!aiReply) {
-            console.log(`[Gmail Fallback] Qwen failed for ${senderEmail}. Falling back to Gemini...`);
+            console.log(`[${folderLabel} Rescue Fallback] DeepSeek failed for ${senderEmail}. Falling back to Gemini...`);
             aiReply = await callGemini(senderEmail, [], "gemini-3.8-flash", true, 0, 'gmail');
         }
 
         if (aiReply) {
             if (/^IGNORE[\s.!\n]*$/i.test(aiReply.trim())) {
-                console.log(`[Spam Inspector] AI processed booking tool and replied IGNORE for ${senderEmail}`);
+                console.log(`[${folderLabel} Inspector] AI processed booking tool and replied IGNORE for ${senderEmail}`);
                 return res.json({ isLegit: true, action: "IGNORED", reason: evalResult.reason });
             }
 
-            console.log(`[Spam Inspector] Creating draft for rescued email: ${senderEmail}`);
+            console.log(`[${folderLabel} Inspector] Creating draft for rescued email: ${senderEmail}`);
             return res.json({ isLegit: true, action: "DRAFT_CREATED", replyText: aiReply, reason: evalResult.reason });
         }
 
         return res.json({ isLegit: true, action: "RESCUED_NO_DRAFT", reason: evalResult.reason });
     } catch (error) {
-        console.error("Spam Evaluation Error:", error);
+        console.error(`${defaultFolder} Evaluation Error:`, error);
         res.json({ isLegit: false, action: "ERROR", reason: error.message });
     }
-});
+}
+
+app.post('/evaluate-spam', (req, res) => handleEmailRescueEvaluation(req, res, 'Spam'));
+app.post('/evaluate-promotions', (req, res) => handleEmailRescueEvaluation(req, res, 'Promotions'));
 
 // cron.schedule('0 10 * * *', runDailyFollowUps); // DISABLED: Automatic follow-ups disabled
 
