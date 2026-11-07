@@ -1018,7 +1018,7 @@ async function callQwenTelegram(text, chatId = TELEGRAM_CHAT_ID) {
 
     try {
         let response = await axios.post(QWEN_API_URL, {
-            model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7
+            model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7, enable_thinking: false
         }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
 
         if (response.data.choices && response.data.choices.length > 0) {
@@ -1037,7 +1037,7 @@ async function callQwenTelegram(text, chatId = TELEGRAM_CHAT_ID) {
                 }
 
                 response = await axios.post(QWEN_API_URL, {
-                    model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7
+                    model: QWEN_MODEL, messages: messages, tools: qwenTelegramTools, temperature: 0.7, enable_thinking: false
                 }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` } });
 
                 message = response.data.choices[0].message;
@@ -1886,7 +1886,8 @@ async function generateCommentReply(commentText) {
         try {
             const response = await axios.post(QWEN_API_URL, {
                 model: QWEN_MODEL,
-                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }]
+                messages: [{ role: "system", content: systemPrompt }, { role: "user", content: `User's Comment: "${commentText}"` }],
+                enable_thinking: false
             }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QWEN_API_KEY}` }, timeout: 15000 });
             if (response.data.choices && response.data.choices.length > 0) {
                 return response.data.choices[0].message.content;
@@ -2318,6 +2319,8 @@ async function callQwen(senderId, userMessage = null, extraContext = [], depth =
     };
     if (forceLocal) {
         requestPayload.reasoning_effort = 'none'; // Disables slow <think> token generation on local qwen3.6:35b-a3b
+    } else {
+        requestPayload.enable_thinking = false; // Fast instant responses on Qwen3.8-Flash Cloud
     }
 
     while (retries > 0) {
